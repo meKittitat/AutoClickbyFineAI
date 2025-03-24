@@ -3,9 +3,10 @@ Main window for the Auto Click application.
 """
 import keyboard
 from PyQt5.QtWidgets import (QMainWindow, QTabWidget, QSystemTrayIcon, 
-                            QMenu, QAction, QMessageBox)
+                            QMenu, QAction, QMessageBox, QWidget, QVBoxLayout,
+                            QLabel, QPushButton, QApplication)
 from PyQt5.QtGui import QIcon
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSettings
 
 from autoclick.config import USER_ROLES, APP_NAME, APP_ICON
 from autoclick.ui.login_dialog import LoginDialog
