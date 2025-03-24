@@ -8,12 +8,14 @@ A comprehensive auto-clicking and macro recording application built with Python 
 - **Recording Capabilities**: Record mouse clicks, keyboard presses, movements, and delays
 - **Script Management**: Import/export scripts in JSON format
 - **User Authentication**: Secure login system with profile management
+- **User Management**: Admin can create users with specific permissions
 - **Macro Profiles**: Create multiple profiles with custom hotkeys
 - **Advanced Features**: 
   - Randomization to avoid detection
   - Playback speed adjustment
   - Repeat count settings
   - System tray integration
+  - Image recognition for dynamic targets
 
 ## Installation
 
@@ -35,6 +37,15 @@ python main.py
 
 1. When you first run the application, you'll be prompted to register or login
 2. Create a new account with a username and password (minimum 6 characters)
+3. Default admin account: username: `admin`, password: `admin123`
+
+### User Management (Admin only)
+
+1. Navigate to the "User Management" tab
+2. Click "Manage Users" to open the user management dialog
+3. Create new users with specific roles and permissions
+4. Edit existing users to change their roles and permissions
+5. Delete users when they are no longer needed
 
 ### Recording Macros
 
@@ -68,9 +79,21 @@ The "Settings" tab allows you to configure:
 - Randomization factors
 - Hotkeys
 
+## User Roles and Permissions
+
+The application supports the following user roles:
+
+- **Administrator**: Full access to all features
+- **Power User**: Can record, play, edit scripts, import/export, create profiles, and use image recognition
+- **Standard User**: Can record, play, edit scripts, and create profiles
+- **Limited User**: Can only play macros
+
+Permissions can be customized for each user regardless of their role.
+
 ## Security Features
 
 - Password hashing for secure authentication
+- Permission-based access control
 - Safeguards against infinite loops
 - Error handling to prevent crashes
 
