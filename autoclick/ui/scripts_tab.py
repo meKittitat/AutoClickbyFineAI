@@ -185,7 +185,6 @@ class ScriptsTab(QWidget):
                     raise ValueError("Invalid script format")
                 
                 # Save imported script
-                script_id = self.db_manager.```python
                 script_id = self.db_manager.save_script(
                     self.user_id,
                     data['name'],

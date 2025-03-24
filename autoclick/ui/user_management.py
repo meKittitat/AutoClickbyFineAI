@@ -4,41 +4,7 @@ User management dialogs for the Auto Click application.
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
                             QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
                             QFormLayout, QLineEdit, QComboBox, QGroupBox, 
-                            QCheckBox, QDialogButtonBox, QMessageBox)
-from PyQt5.QtCore import Qt
-
-from autoclick.config import USER_ROLES, PERMISSIONS, DEFAULT_ROLE_PERMISSIONS
-
-class UserManagementDialog(QDialog):
-    def __init__(self, db_manager, parent=None):
-        super().__init__(parent)
-        self.db_manager = db_manager
-        self.initUI()
-        self.load_users()
-    
-    def initUI(self):
-        self.setWindowTitle("User Management")
-        self.setMinimumSize(800, 500)
-        
-        layout = QVBoxLayout()
-        
-        # User table
-        self.user_table = QTableWidget()
-        self.user_table.setColumnCount(4)
-        self.user_table.setHorizontalHeaderLabels(["Username", "Role", "Created", "Actions"])
-        self.user_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.user_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.user_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.user_table.horizontLet me continue with the user management dialog implementation:
-
-{% code path="autoclick/ui/user_management.py" type="update" %}
-"""
-User management dialogs for the Auto Click application.
-"""
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton, 
-                            QLabel, QTableWidget, QTableWidgetItem, QHeaderView,
-                            QFormLayout, QLineEdit, QComboBox, QGroupBox, 
-                            QCheckBox, QDialogButtonBox, QMessageBox)
+                            QCheckBox, QDialogButtonBox, QMessageBox, QWidget)
 from PyQt5.QtCore import Qt
 
 from autoclick.config import USER_ROLES, PERMISSIONS, DEFAULT_ROLE_PERMISSIONS
