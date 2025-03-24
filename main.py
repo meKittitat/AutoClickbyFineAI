@@ -6,831 +6,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QLineEdit, QGroupBox, QFormLayout, QSpinBox, 
                             QDoubleSpinBox, QCheckBox, QComboBox, QTextEdit,
                             QFileDialog, QMessageBox, QSystemTrayIcon, QMenu,
-                            QAction, QListWidget, QListWidgetItem, QInputDialog)
-from PyQt5.QtCore import Qt, QTimer, QPoint, QThread, pyqtSignal, QSettings
-from PyQt5.QtGui import QIcon, QPixmap, QColor, QImage
-import pyautogui
-import time
-import keyboard
-import sqlite3
-import hashlib
-import uuid
-import cv2
-import numpy as np
-from datetime import datetime
-
-# Disable PyAutoGUI fail-safe temporarily (we'll implement our own)
-pyautogui.FAILSAFE = False
-
-class PixelDisplayWidget(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setMinimumSize(150, 150)
-        self.setMaximumSize(150, 150)
-        self.pixmap = QPixmap(150, 150)
-        self.pixmap.fill(Qt.white)
-        self.current_pos = QPoint(0, 0)
-        self.zoom_factor = 10  # Each pixel becomes 10x10
-        
-        self.update_timer = QTimer(self)
-        self.update_timer.timeout.connect(self.update_pixel_display)
-        self.update_timer.start(100)  # Update every 100ms
-        
-    def update_pixel_display(self):
-        try:
-            x, y = pyautogui.position()
-            self.current_pos = QPoint(x, y)
-            
-            # Capture screen area around cursor
-            screenshot = pyautogui.screenshot(region=(x-7, y-7, 15, 15))
-            img = screenshot.convert('RGB')
-            
-            # Create a new pixmap
-            self.pixmap = QPixmap(150, 150)
-            self.pixmap.fill(Qt.white)
-            
-            # Draw the zoomed pixels
-            qp = QPainter(self.pixmap)
-            for i in range(15):
-                for j in range(15):
-                    try:
-                        r, g, b = img.getpixel((i, j))
-                        qp.fillRect(i*self.zoom_factor, j*self.zoom_factor, 
-                                   self.zoom_factor, self.zoom_factor, 
-                                   QColor(r, g, b))
-                    except:
-                        pass
-            
-            # Draw crosshair at center
-            qp.setPen(QPen(Qt.red, 1))
-            center = 7 * self.zoom_factor + self.zoom_factor // 2
-            qp.drawLine(center, 0, center, 150)
-            qp.drawLine(0, center, 150, center)
-            qp.end()
-            
-            self.update()
-        except:
-            pass
-    
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.drawPixmap(0, 0, self.pixmap)
-
-class RecordingThread(QThread):
-    action_recorded = pyqtSignal(dict)
-    
-    def __init__(self):
-        super().__init__()
-        self.running = False
-        self.actions = []
-        self.start_time = 0
-        self.last_position = None
-        self.record_movement = True
-        self.movement_threshold = 5  # pixels
-        self.movement_interval = 0.1  # seconds
-        self.last_movement_time = 0
-    
-    def run(self):
-        self.running = True
-        self.start_time = time.time()
-        self.last_position = pyautogui.position()
-        self.last_movement_time = time.time()
-        
-        while self.running:
-            # Record mouse position changes
-            current_pos = pyautogui.position()
-            current_time = time.time()
-            
-            # Record significant mouse movements
-            if self.record_movement and (current_time - self.last_movement_time) >= self.movement_interval:
-                x_diff = abs(current_pos[0] - self.last_position[0])
-                y_diff = abs(current_pos[1] - self.last_position[1])
-                
-                if x_diff > self.movement_threshold or y_diff > self.movement_threshold:
-                    action = {
-                        'type': 'move',
-                        'x': current_pos[0],
-                        'y': current_pos[1],
-                        'time': current_time - self.start_time
-                    }
-                    self.action_recorded.emit(action)
-                    self.actions.append(action)
-                    self.last_position = current_pos
-                    self.last_movement_time = current_time
-            
-            # Small sleep to prevent high CPU usage
-            time.sleep(0.01)
-    
-    def stop(self):
-        self.running = False
-    
-    def add_action(self, action_type, **kwargs):
-        action = {
-            'type': action_type,
-            'time': time.time() - self.start_time,
-            **kwargs
-        }
-        self.actions.append(action)
-        self.action_recorded.emit(action)
-
-class PlaybackThread(QThread):
-    playback_finished = pyqtSignal()
-    action_played = pyqtSignal(int)
-    
-    def __init__(self, actions, speed_factor=1.0, repeat_count=1, randomize=False, randomize_factor=0.1):
-        super().__init__()
-        self.actions = actions
-        self.speed_factor = speed_factor
-        self.repeat_count = repeat_count
-        self.running = False
-        self.randomize = randomize
-        self.randomize_factor = randomize_factor
-    
-    def run(self):
-        self.running = True
-        
-        for _ in range(self.repeat_count):
-            if not self.running:
-                break
-                
-            last_time = 0
-            for i, action in enumerate(self.actions):
-                if not self.running:
-                    break
-                
-                # Calculate delay
-                if i > 0:
-                    delay = (action['time'] - last_time) / self.speed_factor
-                    
-                    # Add randomization if enabled
-                    if self.randomize:
-                        random_factor = 1.0 + (np.random.random() * 2 - 1) * self.randomize_factor
-                        delay *= random_factor
-                    
-                    time.sleep(max(0, delay))
-                
-                # Execute action
-                self._execute_action(action)
-                last_time = action['time']
-                
-                # Emit signal for UI update
-                self.action_played.emit(i)
-        
-        self.running = False
-        self.playback_finished.emit()
-    
-    def _execute_action(self, action):
-        try:
-            if action['type'] == 'click':
-                if self.randomize:
-                    # Add slight randomization to click position
-                    rand_x = action['x'] + int((np.random.random() * 2 - 1) * 3)
-                    rand_y = action['y'] + int((np.random.random() * 2 - 1) * 3)
-                    pyautogui.click(rand_x, rand_y, button=action.get('button', 'left'))
-                else:
-                    pyautogui.click(action['x'], action['y'], button=action.get('button', 'left'))
-                    
-            elif action['type'] == 'move':
-                pyautogui.moveTo(action['x'], action['y'])
-                
-            elif action['type'] == 'keypress':
-                pyautogui.press(action['key'])
-                
-            elif action['type'] == 'keydown':
-                pyautogui.keyDown(action['key'])
-                
-            elif action['type'] == 'keyup':
-                pyautogui.keyUp(action['key'])
-                
-            elif action['type'] == 'scroll':
-                pyautogui.scroll(action['amount'])
-        except Exception as e:
-            print(f"Error executing action: {e}")
-    
-    def stop(self):
-        self.running = False
-
-class DatabaseManager:
-    def __init__(self):
-        self.conn = None
-        self.setup_database()
-    
-    def setup_database(self):
-        try:
-            self.conn = sqlite3.connect('autoclick.db')
-            cursor = self.conn.cursor()
-            
-            # Create users table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id TEXT PRIMARY KEY,
-                username TEXT UNIQUE,
-                password_hash TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            ''')
-            
-            # Create scripts table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS scripts (
-                id TEXT PRIMARY KEY,
-                user_id TEXT,
-                name TEXT,
-                description TEXT,
-                content TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id)
-            )
-            ''')
-            
-            # Create profiles table
-            cursor.execute('''
-            CREATE TABLE IF NOT EXISTS profiles (
-                id TEXT PRIMARY KEY,
-                user_id TEXT,
-                name TEXT,
-                hotkey TEXT,
-                script_id TEXT,
-                settings TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users (id),
-                FOREIGN KEY (script_id) REFERENCES scripts (id)
-            )
-            ''')
-            
-            self.conn.commit()
-        except Exception as e:
-            print(f"Database setup error: {e}")
-    
-    def create_user(self, username, password):
-        try:
-            cursor = self.conn.cursor()
-            user_id = str(uuid.uuid4())
-            password_hash = hashlib.sha256(password.encode()).hexdigest()
-            
-            cursor.execute(
-                "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
-                (user_id, username, password_hash)
-            )
-            self.conn.commit()
-            return user_id
-        except sqlite3.IntegrityError:
-            return None  # Username already exists
-        except Exception as e:
-            print(f"Error creating user: {e}")
-            return None
-    
-    def authenticate_user(self, username, password):
-        try:
-            cursor = self.conn.cursor()
-            password_hash = hashlib.sha256(password.encode()).hexdigest()
-            
-            cursor.execute(
-                "SELECT id FROM users WHERE username = ? AND password_hash = ?",
-                (username, password_hash)
-            )
-            result = cursor.fetchone()
-            return result[0] if result else None
-        except Exception as e:
-            print(f"Authentication error: {e}")
-            return None
-    
-    def save_script(self, user_id, name, description, content):
-        try:
-            cursor = self.conn.cursor()
-            script_id = str(uuid.uuid4())
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            cursor.execute(
-                "INSERT INTO scripts (id, user_id, name, description, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (script_id, user_id, name, description, json.dumps(content), now, now)
-            )
-            self.conn.commit()
-            return script_id
-        except Exception as e:
-            print(f"Error saving script: {e}")
-            return None
-    
-    def update_script(self, script_id, name, description, content):
-        try:
-            cursor = self.conn.cursor()
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            cursor.execute(
-                "UPDATE scripts SET name = ?, description = ?, content = ?, updated_at = ? WHERE id = ?",
-                (name, description, json.dumps(content), now, script_id)
-            )
-            self.conn.commit()
-            return True
-        except Exception as e:
-            print(f"Error updating script: {e}")
-            return False
-    
-    def get_user_scripts(self, user_id):
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT id, name, description, created_at FROM scripts WHERE user_id = ? ORDER BY updated_at DESC",
-                (user_id,)
-            )
-            return cursor.fetchall()
-        except Exception as e:
-            print(f"Error getting scripts: {e}")
-            return []
-    
-    def get_script(self, script_id):
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT name, description, content FROM scripts WHERE id = ?",
-                (script_id,)
-            )
-            result = cursor.fetchone()
-            if result:
-                return {
-                    'name': result[0],
-                    'description': result[1],
-                    'content': json.loads(result[2])
-                }
-            return None
-        except Exception as e:
-            print(f"Error getting script: {e}")
-            return None
-    
-    def save_profile(self, user_id, name, hotkey, script_id, settings):
-        try:
-            cursor = self.conn.cursor()
-            profile_id = str(uuid.uuid4())
-            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            cursor.execute(
-                "INSERT INTO profiles (id, user_id, name, hotkey, script_id, settings, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (profile_id, user_id, name, hotkey, script_id, json.dumps(settings), now, now)
-            )
-            self.conn.commit()
-            return profile_id
-        except Exception as e:
-            print(f"Error saving profile: {e}")
-            return None
-    
-    def get_user_profiles(self, user_id):
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                """
-                SELECT p.id, p.name, p.hotkey, s.name 
-                FROM profiles p
-                JOIN scripts s ON p.script_id = s.id
-                WHERE p.user_id = ?
-                ORDER BY p.updated_at DESC
-                """,
-                (user_id,)
-            )
-            return cursor.fetchall()
-        except Exception as e:
-            print(f"Error getting profiles: {e}")
-            return []
-    
-    def get_profile(self, profile_id):
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                """
-                SELECT p.name, p.hotkey, p.script_id, p.settings, s.content
-                FROM profiles p
-                JOIN scripts s ON p.script_id = s.id
-                WHERE p.id = ?
-                """,
-                (profile_id,)
-            )
-            result = cursor.fetchone()
-            if result:
-                return {
-                    'name': result[0],
-                    'hotkey': result[1],
-                    'script_id': result[2],
-                    'settings': json.loads(result[3]),
-                    'script_content': json.loads(result[4])
-                }
-            return None
-        except Exception as e:
-            print(f"Error getting profile: {e}")
-            return None
-    
-    def close(self):
-        if self.conn:
-            self.conn.close()
-
-class LoginDialog(QWidget):
-    login_successful = pyqtSignal(str, str)  # user_id, username
-    
-    def __init__(self, db_manager):
-        super().__init__()
-        self.db_manager = db_manager
-        self.initUI()
-    
-    def initUI(self):
-        self.setWindowTitle('Auto Click - Login')
-        self.setFixedSize(400, 300)
-        
-        layout = QVBoxLayout()
-        
-        # Logo or title
-        title_label = QLabel("Auto Click")
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setStyleSheet("font-size: 24px; font-weight: bold; margin: 20px;")
-        layout.addWidget(title_label)
-        
-        # Login form
-        form_layout = QFormLayout()
-        
-        self.username_input = QLineEdit()
-        self.password_input = QLineEdit()
-        self.password_input.setEchoMode(QLineEdit.Password)
-        
-        form_layout.addRow("Username:", self.username_input)
-        form_layout.addRow("Password:", self.password_input)
-        
-        form_container = QWidget()
-        form_container.setLayout(form_layout)
-        layout.addWidget(form_container)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
-        self.login_btn = QPushButton("Login")
-        self.login_btn.clicked.connect(self.login)
-        
-        self.register_btn = QPushButton("Register")
-        self.register_btn.clicked.connect(self.register)
-        
-        button_layout.addWidget(self.login_btn)
-        button_layout.addWidget(self.register_btn)
-        
-        button_container = QWidget()
-        button_container.setLayout(button_layout)
-        layout.addWidget(button_container)
-        
-        # Status message
-        self.status_label = QLabel("")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        self.status_label.setStyleSheet("color: red;")
-        layout.addWidget(self.status_label)
-        
-        self.setLayout(layout)
-    
-    def login(self):
-        username = self.username_input.text().strip()
-        password = self.password_input.text()
-        
-        if not username or not password:
-            self.status_label.setText("Please enter both username and password")
-            return
-        
-        user_id = self.db_manager.authenticate_user(username, password)
-        if user_id:
-            self.login_successful.emit(user_id, username)
-            self.close()
-        else:
-            self.status_label.setText("Invalid username or password")
-    
-    def register(self):
-        username = self.username_input.text().strip()
-        password = self.password_input.text()
-        
-        if not username or not password:
-            self.status_label.setText("Please enter both username and password")
-            return
-        
-        if len(password) < 6:
-            self.status_label.setText("Password must be at least 6 characters")
-            return
-        
-        user_id = self.db_manager.create_user(username, password)
-        if user_id:
-            self.status_label.setText("Registration successful! You can now login.")
-            self.status_label.setStyleSheet("color: green;")
-        else:
-            self.status_label.setText("Username already exists")
-
-class ImageRecognitionTool:
-    def __init__(self):
-        self.templates = {}  # Store loaded templates
-    
-    def load_template(self, name, image_path):
-        try:
-            template = cv2.imread(image_path, cv2.IMREAD_COLOR)
-            if template is None:
-                return False
-            self.templates[name] = template
-            return True
-        except Exception as e:
-            print(f"Error loading template: {e}")
-            return False
-    
-    def find_on_screen(self, template_name, confidence=0.8):
-        if template_name not in self.templates:
-            return None
-        
-        template = self.templates[template_name]
-        screenshot = pyautogui.screenshot()
-        screenshot = np.array(screenshot)
-        screenshot = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
-        
-        result = cv2.matchTemplate(screenshot, template, cv2.TM_CCOEFF_NORMED)
-        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
-        
-        if max_val >= confidence:
-            # Get the dimensions of the template
-            h, w = template.shape[:2]
-            # Calculate the center point of the match
-            center_x = max_loc[0] + w // 2
-            center_y = max_loc[1] + h // 2
-            return (center_x, center_y, max_val)
-        
-        return None
-
-class AutoClickApp(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.db_manager = DatabaseManager()
-        self.image_recognition = ImageRecognitionTool()
-        self.user_id = None
-        self.username = None
-        self.recording_thread = None
-        self.playback_thread = None
-        self.current_actions = []
-        self.current_script_id = None
-        self.current_script_name = ""
-        self.current_script_description = ""
-        self.active_profiles = {}  # Store active profiles with their hotkeys
-        
-        # Show login dialog first
-        self.show_login_dialog()
-    
-    def show_login_dialog(self):
-        self.login_dialog = LoginDialog(self.db_manager)
-        self.login_dialog.login_successful.connect(self.on_login_successful)
-        self.login_dialog.show()
-    
-    def on_login_successful(self, user_id, username):
-        self.user_id = user_id
-        self.username = username
-        self.initUI()
-        self.show()
-    
-    def initUI(self):
-        self.setWindowTitle(f'Auto Click - {self.username}')
-        self.setGeometry(100, 100, 1000, 700)
-        
-        # Create main tab widget
-        self.tabs = QTabWidget()
-        
-        # Create tabs
-        self.recorder_tab = QWidget()
-        self.scripts_tab = QWidget()
-        self.profiles_tab = QWidget()
-        self.settings_tab = QWidget()
-        
-        self.setup_recorder_tab()
-        self.setup_scripts_tab()
-        self.setup_profiles_tab()
-        self.setup_settings_tab()
-        
-        self.tabs.addTab(self.recorder_tab, "Recorder")
-        self.tabs.addTab(self.scripts_tab, "Scripts")
-        self.tabs.addTab(self.profiles_tab, "Profiles")
-        self.tabs.addTab(self.settings_tab, "Settings")
-        
-        self.setCentralWidget(self.tabs)
-        
-        # Setup system tray
-        self.setup_system_tray()
-        
-        # Load settings
-        self.load_settings()
-    
-    def setup_recorder_tab(self):
-        layout = QVBoxLayout()
-        
-        # Top section with coordinate display and pixel viewer
-        top_layout = QHBoxLayout()
-        
-        # Coordinate display
-        coord_group = QGroupBox("Cursor Position")
-        coord_layout = QVBoxLayout()
-        
-        self.coord_label = QLabel("X: 0, Y: 0")
-        self.coord_label.setAlignment(Qt.AlignCenter)
-        self.coord_label.setStyleSheet("font-size: 16px;")
-        coord_layout.addWidget(self.coord_label)
-        
-        # Color display
-        self.color_label = QLabel("RGB: 0, 0, 0")
-        self.color_label.setAlignment(Qt.AlignCenter)
-        coord_layout.addWidget(self.color_label)
-        
-        coord_group.setLayout(coord_layout)
-        top_layout.addWidget(coord_group)
-        
-        # Pixel display
-        pixel_group = QGroupBox("Pixel View")
-        pixel_layout = QVBoxLayout()
-        self.pixel_display = PixelDisplayWidget()
-        pixel_layout.addWidget(self.pixel_display)
-        pixel_group.setLayout(pixel_layout)
-        top_layout.addWidget(pixel_group)
-        
-        # Recording controls
-        controls_group = QGroupBox("Recording Controls")
-        controls_layout = QVBoxLayout()
-        
-        # Script info
-        script_info_layout = QFormLayout()
-        self.script_name_input = QLineEdit()
-        self.script_desc_input = QTextEdit()
-        self.script_desc_input.setMaximumHeight(60)
-        
-        script_info_layout.addRow("Name:", self.script_name_input)
-        script_info_layout.addRow("Description:", self.script_desc_input)
-        controls_layout.addLayout(script_info_layout)
-        
-        # Record/Stop buttons
-        button_layout = QHBoxLayout()
-        
-        self.record_btn = QPushButton("Start Recording")
-        self.record_btn.clicked.connect(self.toggle_recording)
-        
-        self.play_btn = QPushButton("Play")
-        self.play_btn.clicked.connect(self.play_recording)
-        self.play_btn.setEnabled(False)
-        
-        button_layout.addWidget(self.record_btn)
-        button_layout.addWidget(self.play_btn)
-        
-        controls_layout.addLayout(button_layout)
-        
-        # Playback settings
-        playback_layout = QFormLayout()
-        
-        self.speed_input = QDoubleSpinBox()
-        self.speed_input.setRange(0.1, 10.0)
-        self.speed_input.setValue(1.0)
-        self.speed_input.setSingleStep(0.1)
-        
-        self.repeat_input = QSpinBox()
-        self.repeat_input.setRange(1, 9999)
-        self.repeat_input.setValue(1)
-        
-        self.randomize_cb = QCheckBox("Add randomization")
-        
-        playback_layout.addRow("Speed:", self.speed_input)
-        playback_layout.addRow("Repeat:", self.repeat_input)
-        playback_layout.addRow("", self.randomize_cb)
-        
-        controls_layout.addLayout(playback_layout)
-        
-        # Save/Load buttons
-        save_load_layout = QHBoxLayout()
-        
-        self.save_btn = QPushButton("Save Script")
-        self.save_btn.clicked.connect(self.save_script)
-        self.save_btn.setEnabled(False)
-        
-        self.clear_btn = QPushButton("Clear")
-        self.clear_btn.clicked.connect(self.clear_recording)
-        
-        save_load_layout.addWidget(self.save_btn)
-        save_load_layout.addWidget(self.clear_btn)
-        
-        controls_layout.addLayout(save_load_layout)
-        
-        controls_group.setLayout(controls_layout)
-        top_layout.addWidget(controls_group)
-        
-        layout.addLayout(top_layout)
-        
-        # Actions list
-        actions_group = QGroupBox("Recorded Actions")
-        actions_layout = QVBoxLayout()
-        
-        self.actions_list = QListWidget()
-        actions_layout.addWidget(self.actions_list)
-        
-        actions_group.setLayout(actions_layout)
-        layout.addWidget(actions_group)
-        
-        self.recorder_tab.setLayout(layout)
-        
-        # Setup timer to update coordinates
-        self.coord_timer = QTimer(self)
-        self.coord_timer.timeout.connect(self.update_coordinates)
-        self.coord_timer.start(100)  # Update every 100ms
-        
-        # Setup global hotkeys
-        keyboard.on_press(self.on_key_press)
-    
-    def setup_scripts_tab(self):
-        layout = QVBoxLayout()
-        
-        # Scripts list
-        self.scripts_list = QListWidget()
-        self.scripts_list.itemDoubleClicked.connect(self.load_script)
-        layout.addWidget(self.scripts_list)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
-        self.refresh_scripts_btn = QPushButton("Refresh")
-        self.refresh_scripts_btn.clicked.connect(self.load_user_scripts)
-        
-        self.delete_script_btn = QPushButton("Delete")
-        self.delete_script_btn.clicked.connect(self.delete_script)
-        
-        self.export_script_btn = QPushButton("Export")
-        self.export_script_btn.clicked.connect(self.export_script)
-        
-        self.import_script_btn = QPushButton("Import")
-        self.import_script_btn.clicked.connect(self.import_script)
-        
-        button_layout.addWidget(self.refresh_scripts_btn)
-        button_layout.addWidget(self.delete_script_btn)
-        button_layout.addWidget(self.export_script_btn)
-        button_layout.addWidget(self.import_script_btn)
-        
-        layout.addLayout(button_layout)
-        
-        self.scripts_tab.setLayout(layout)
-        
-        # Load user scripts
-        self.load_user_scripts()
-    
-    def setup_profiles_tab(self):
-        layout = QVBoxLayout()
-        
-        # Profiles list
-        self.profiles_list = QListWidget()
-        self.profiles_list.itemDoubleClicked.connect(self.edit_profile)
-        layout.addWidget(self.profiles_list)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        
-        self.new_profile_btn = QPushButton("New Profile")
-        self.new_profile_btn.clicked.connect(self.create_profile)
-        
-        self.refresh_profiles_btn = QPushButton("Refresh")
-        self.refresh_profiles_btn.clicked.connect(self.load_user_profiles)
-        
-        self.delete_profile_btn = QPushButton("Delete")
-        self.delete_profile_btn.clicked.connect(self.delete_profile)
-        
-        button_layout.addWidget(self.new_profile_btn)
-        button_layout.addWidget(self.refresh_profiles_btn)
-        button_layout.addWidget(self.delete_profile_btn)
-        
-        layout.addLayout(button_layout)
-        
-        self.profiles_tab.setLayout(layout)
-        
-        # Load user profiles
-        self.load_user_profiles()
-    
-    def setup_settings_tab(self):
-        layout = QVBoxLayout()
-        
-        # General settings
-        general_group = QGroupBox("General Settings")
-        general_layout = QFormLayout()
-        
-        self.start_with_windows_cb = QCheckBox()
-        self.minimize_to_tray_cb = QCheckBox()
-        
-        general_layout.addRow("Start with Windows:", self.start_with_windows_cb)
-        general_layout.addRow("Minimize to tray:", self.minimize_to_tray_cb)
-        
-        general_group.setLayout(general_layout)
-        layout.addWidget(general_group)
-        
-        # Recording settings
-        recording_group = QGroupBox("Recording Settings")
-        recording_layout = QFormLayout()
-        
-        self.record_mouse_movement_cb = QCheckBox()
-        Let me continue implementing the Auto Click program with PyQt:
-
-{% code path="main.py" type="update" %}
-import sys
-import json
-import os
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                            QHBoxLayout, QPushButton, QLabel, QTabWidget, 
-                            QLineEdit, QGroupBox, QFormLayout, QSpinBox, 
-                            QDoubleSpinBox, QCheckBox, QComboBox, QTextEdit,
-                            QFileDialog, QMessageBox, QSystemTrayIcon, QMenu,
-                            QAction, QListWidget, QListWidgetItem, QInputDialog)
+                            QAction, QListWidget, QListWidgetItem, QInputDialog,
+                            QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem,
+                            QHeaderView)
 from PyQt5.QtCore import Qt, QTimer, QPoint, QThread, pyqtSignal, QSettings
 from PyQt5.QtGui import QIcon, QPixmap, QColor, QImage, QPainter, QPen
 import pyautogui
@@ -846,6 +24,34 @@ from datetime import datetime
 # Disable PyAutoGUI fail-safe temporarily (we'll implement our own)
 pyautogui.FAILSAFE = False
 
+# Define user roles and permissions
+USER_ROLES = {
+    'admin': 'Administrator',
+    'power_user': 'Power User',
+    'standard': 'Standard User',
+    'limited': 'Limited User'
+}
+
+# Define permissions
+PERMISSIONS = {
+    'record_macros': 'Record Macros',
+    'play_macros': 'Play Macros',
+    'edit_scripts': 'Edit Scripts',
+    'import_export': 'Import/Export Scripts',
+    'create_profiles': 'Create Profiles',
+    'use_image_recognition': 'Use Image Recognition',
+    'manage_users': 'Manage Users',
+    'advanced_settings': 'Access Advanced Settings'
+}
+
+# Default permissions for each role
+DEFAULT_ROLE_PERMISSIONS = {
+    'admin': list(PERMISSIONS.keys()),
+    'power_user': ['record_macros', 'play_macros', 'edit_scripts', 'import_export', 'create_profiles', 'use_image_recognition'],
+    'standard': ['record_macros', 'play_macros', 'edit_scripts', 'create_profiles'],
+    'limited': ['play_macros']
+}
+
 class PixelDisplayWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1044,13 +250,25 @@ class DatabaseManager:
             self.conn = sqlite3.connect('autoclick.db')
             cursor = self.conn.cursor()
             
-            # Create users table
+            # Create users table with role field
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id TEXT PRIMARY KEY,
                 username TEXT UNIQUE,
                 password_hash TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                role TEXT DEFAULT 'standard',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT
+            )
+            ''')
+            
+            # Create user permissions table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_permissions (
+                user_id TEXT,
+                permission TEXT,
+                PRIMARY KEY (user_id, permission),
+                FOREIGN KEY (user_id) REFERENCES users (id)
             )
             ''')
             
@@ -1084,20 +302,49 @@ class DatabaseManager:
             )
             ''')
             
+            # Check if admin user exists, if not create one
+            cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+            if cursor.fetchone()[0] == 0:
+                admin_id = str(uuid.uuid4())
+                admin_password = hashlib.sha256("admin123".encode()).hexdigest()
+                cursor.execute(
+                    "INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)",
+                    (admin_id, "admin", admin_password, "admin")
+                )
+                
+                # Add all permissions for admin
+                for permission in PERMISSIONS.keys():
+                    cursor.execute(
+                        "INSERT INTO user_permissions (user_id, permission) VALUES (?, ?)",
+                        (admin_id, permission)
+                    )
+            
             self.conn.commit()
         except Exception as e:
             print(f"Database setup error: {e}")
     
-    def create_user(self, username, password):
+    def create_user(self, username, password, role='standard', permissions=None, created_by=None):
         try:
             cursor = self.conn.cursor()
             user_id = str(uuid.uuid4())
             password_hash = hashlib.sha256(password.encode()).hexdigest()
             
             cursor.execute(
-                "INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)",
-                (user_id, username, password_hash)
+                "INSERT INTO users (id, username, password_hash, role, created_by) VALUES (?, ?, ?, ?, ?)",
+                (user_id, username, password_hash, role, created_by)
             )
+            
+            # Add permissions
+            if permissions is None:
+                # Use default permissions for role
+                permissions = DEFAULT_ROLE_PERMISSIONS.get(role, [])
+            
+            for permission in permissions:
+                cursor.execute(
+                    "INSERT INTO user_permissions (user_id, permission) VALUES (?, ?)",
+                    (user_id, permission)
+                )
+            
             self.conn.commit()
             return user_id
         except sqlite3.IntegrityError:
@@ -1112,14 +359,100 @@ class DatabaseManager:
             password_hash = hashlib.sha256(password.encode()).hexdigest()
             
             cursor.execute(
-                "SELECT id FROM users WHERE username = ? AND password_hash = ?",
+                "SELECT id, role FROM users WHERE username = ? AND password_hash = ?",
                 (username, password_hash)
             )
             result = cursor.fetchone()
-            return result[0] if result else None
+            return result if result else (None, None)
         except Exception as e:
             print(f"Authentication error: {e}")
+            return None, None
+    
+    def get_user_permissions(self, user_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT permission FROM user_permissions WHERE user_id = ?",
+                (user_id,)
+            )
+            return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting user permissions: {e}")
+            return []
+    
+    def get_all_users(self):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT id, username, role, created_at FROM users ORDER BY username"
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Error getting users: {e}")
+            return []
+    
+    def get_user_details(self, user_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT username, role FROM users WHERE id = ?",
+                (user_id,)
+            )
+            return cursor.fetchone()
+        except Exception as e:
+            print(f"Error getting user details: {e}")
             return None
+    
+    def update_user(self, user_id, role, permissions):
+        try:
+            cursor = self.conn.cursor()
+            
+            # Update role
+            cursor.execute(
+                "UPDATE users SET role = ? WHERE id = ?",
+                (role, user_id)
+            )
+            
+            # Delete existing permissions
+            cursor.execute(
+                "DELETE FROM user_permissions WHERE user_id = ?",
+                (user_id,)
+            )
+            
+            # Add new permissions
+            for permission in permissions:
+                cursor.execute(
+                    "INSERT INTO user_permissions (user_id, permission) VALUES (?, ?)",
+                    (user_id, permission)
+                )
+            
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error updating user: {e}")
+            return False
+    
+    def delete_user(self, user_id):
+        try:
+            cursor = self.conn.cursor()
+            
+            # Delete user permissions
+            cursor.execute(
+                "DELETE FROM user_permissions WHERE user_id = ?",
+                (user_id,)
+            )
+            
+            # Delete user
+            cursor.execute(
+                "DELETE FROM users WHERE id = ?",
+                (user_id,)
+            )
+            
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting user: {e}")
+            return False
     
     def save_script(self, user_id, name, description, content):
         try:
@@ -1248,7 +581,7 @@ class DatabaseManager:
             self.conn.close()
 
 class LoginDialog(QWidget):
-    login_successful = pyqtSignal(str, str)  # user_id, username
+    login_successful = pyqtSignal(str, str, str, list)  # user_id, username, role, permissions
     
     def __init__(self, db_manager):
         super().__init__()
@@ -1313,9 +646,10 @@ class LoginDialog(QWidget):
             self.status_label.setText("Please enter both username and password")
             return
         
-        user_id = self.db_manager.authenticate_user(username, password)
+        user_id, role = self.db_manager.authenticate_user(username, password)
         if user_id:
-            self.login_successful.emit(user_id, username)
+            permissions = self.db_manager.get_user_permissions(user_id)
+            self.login_successful.emit(user_id, username, role, permissions)
             self.close()
         else:
             self.status_label.setText("Invalid username or password")
@@ -1338,6 +672,1101 @@ class LoginDialog(QWidget):
             self.status_label.setStyleSheet("color: green;")
         else:
             self.status_label.setText("Username already exists")
+
+class UserManagementDialog(QDialog):
+    def __init__(self, db_manager, parent=None):
+        super().__init__(parent)
+        self.db_manager = db_manager
+        self.initUI()
+        self.load_users()
+    
+    def initUI(self):
+        self.setWindowTitle("User Management")
+        self.setMinimumSize(800, 500)
+        
+        layout = QVBoxLayout()
+        
+        # User table
+        self.user_table = QTableWidget()
+        self.user_table.setColumnCount(4)
+        self.user_table.setHorizontalHeaderLabels(["Username", "Role", "Created", "Actions"])
+        self.user_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.user_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.user_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.user_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        layout.addWidget(self.user_table)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.add_user_btn = QPushButton("Add User")
+        self.add_user_btn.clicked.connect(self.add_user)
+        
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.load_users)
+        
+        button_layout.addWidget(self.add_user_btn)
+        button_layout.addWidget(self.refresh_btn)
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def load_users(self):
+        self.user_table.setRowCount(0)
+        users = self.db_manager.get_all_users()
+        
+        for i, (user_id, username, role, created_at) in enumerate(users):
+            self.user_table.insertRow(i)
+            
+            # Username
+            username_item = QTableWidgetItem(username)
+            username_item.setData(Qt.UserRole, user_id)
+            self.user_table.setItem(i, 0, username_item)
+            
+            # Role
+            role_item = QTableWidgetItem(USER_ROLES.get(role, role))
+            self.user_table.setItem(i, 1, role_item)
+            
+            # Created date
+            created_item = QTableWidgetItem(created_at)
+            self.user_table.setItem(i, 2, created_item)
+            
+            # Actions
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout()
+            actions_layout.setContentsMargins(0, 0, 0, 0)
+            
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda _, uid=user_id: self.edit_user(uid))
+            
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(lambda _, uid=user_id: self.delete_user(uid))
+            
+            actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(delete_btn)
+            actions_widget.setLayout(actions_layout)
+            
+            self.user_table.setCellWidget(i, 3, actions_widget)
+    
+    def add_user(self):
+        dialog = UserEditDialog(self.db_manager, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.load_users()
+    
+    def edit_user(self, user_id):
+        dialog = UserEditDialog(self.db_manager, user_id, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.load_users()
+    
+    def delete_user(self, user_id):
+        # Get user details
+        user_details = self.db_manager.get_user_details(user_id)
+        if not user_details:
+            return
+        
+        username, role = user_details
+        
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self, 
+            "Confirm Delete", 
+            f"Are you sure you want to delete user '{username}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            success = self.db_manager.delete_user(user_id)
+            if success:
+                self.load_users()
+            else:
+                QMessageBox.critical(self, "Error", "Failed to delete user.")
+
+class UserEditDialog(QDialog):
+    def __init__(self, db_manager, user_id=None, parent=None):
+        super().__init__(parent)
+        self.db_manager = db_manager
+        self.user_id = user_id
+        self.initUI()
+        
+        if user_id:
+            self.load_user_data()
+    
+    def initUI(self):
+        self.setWindowTitle("Edit User" if self.user_id else "Add User")
+        self.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # User info form
+        form_layout = QFormLayout()
+        
+        self.username_input = QLineEdit()
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        
+        self.role_combo = QComboBox()
+        for role_id, role_name in USER_ROLES.items():
+            self.role_combo.addItem(role_name, role_id)
+        
+        form_layout.addRow("Username:", self.username_input)
+        if not self.user_id:  # Only show password field for new users
+            form_layout.addRow("Password:", self.password_input)
+        form_layout.addRow("Role:", self.role_combo)
+        
+        layout.addLayout(form_layout)
+        
+        # Permissions group
+        permissions_group = QGroupBox("Permissions")
+        permissions_layout = QVBoxLayout()
+        
+        self.permission_checkboxes = {}
+        for perm_id, perm_name in PERMISSIONS.items():
+            checkbox = QCheckBox(perm_name)
+            self.permission_checkboxes[perm_id] = checkbox
+            permissions_layout.addWidget(checkbox)
+        
+        permissions_group.setLayout(permissions_layout)
+        layout.addWidget(permissions_group)
+        
+        # Role presets
+        preset_layout = QHBoxLayout()
+        preset_label = QLabel("Apply preset:")
+        preset_layout.addWidget(preset_label)
+        
+        for role_id, role_name in USER_ROLES.items():
+            presetLet me continue implementing the user management functionality:
+
+{% code path="main.py" type="update" %}
+import sys
+import json
+import os
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
+                            QHBoxLayout, QPushButton, QLabel, QTabWidget, 
+                            QLineEdit, QGroupBox, QFormLayout, QSpinBox, 
+                            QDoubleSpinBox, QCheckBox, QComboBox, QTextEdit,
+                            QFileDialog, QMessageBox, QSystemTrayIcon, QMenu,
+                            QAction, QListWidget, QListWidgetItem, QInputDialog,
+                            QDialog, QDialogButtonBox, QTableWidget, QTableWidgetItem,
+                            QHeaderView)
+from PyQt5.QtCore import Qt, QTimer, QPoint, QThread, pyqtSignal, QSettings
+from PyQt5.QtGui import QIcon, QPixmap, QColor, QImage, QPainter, QPen
+import pyautogui
+import time
+import keyboard
+import sqlite3
+import hashlib
+import uuid
+import cv2
+import numpy as np
+from datetime import datetime
+
+# Disable PyAutoGUI fail-safe temporarily (we'll implement our own)
+pyautogui.FAILSAFE = False
+
+# Define user roles and permissions
+USER_ROLES = {
+    'admin': 'Administrator',
+    'power_user': 'Power User',
+    'standard': 'Standard User',
+    'limited': 'Limited User'
+}
+
+# Define permissions
+PERMISSIONS = {
+    'record_macros': 'Record Macros',
+    'play_macros': 'Play Macros',
+    'edit_scripts': 'Edit Scripts',
+    'import_export': 'Import/Export Scripts',
+    'create_profiles': 'Create Profiles',
+    'use_image_recognition': 'Use Image Recognition',
+    'manage_users': 'Manage Users',
+    'advanced_settings': 'Access Advanced Settings'
+}
+
+# Default permissions for each role
+DEFAULT_ROLE_PERMISSIONS = {
+    'admin': list(PERMISSIONS.keys()),
+    'power_user': ['record_macros', 'play_macros', 'edit_scripts', 'import_export', 'create_profiles', 'use_image_recognition'],
+    'standard': ['record_macros', 'play_macros', 'edit_scripts', 'create_profiles'],
+    'limited': ['play_macros']
+}
+
+class PixelDisplayWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(150, 150)
+        self.setMaximumSize(150, 150)
+        self.pixmap = QPixmap(150, 150)
+        self.pixmap.fill(Qt.white)
+        self.current_pos = QPoint(0, 0)
+        self.zoom_factor = 10  # Each pixel becomes 10x10
+        
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.update_pixel_display)
+        self.update_timer.start(100)  # Update every 100ms
+        
+    def update_pixel_display(self):
+        try:
+            x, y = pyautogui.position()
+            self.current_pos = QPoint(x, y)
+            
+            # Capture screen area around cursor
+            screenshot = pyautogui.screenshot(region=(x-7, y-7, 15, 15))
+            img = screenshot.convert('RGB')
+            
+            # Create a new pixmap
+            self.pixmap = QPixmap(150, 150)
+            self.pixmap.fill(Qt.white)
+            
+            # Draw the zoomed pixels
+            qp = QPainter(self.pixmap)
+            for i in range(15):
+                for j in range(15):
+                    try:
+                        r, g, b = img.getpixel((i, j))
+                        qp.fillRect(i*self.zoom_factor, j*self.zoom_factor, 
+                                   self.zoom_factor, self.zoom_factor, 
+                                   QColor(r, g, b))
+                    except:
+                        pass
+            
+            # Draw crosshair at center
+            qp.setPen(QPen(Qt.red, 1))
+            center = 7 * self.zoom_factor + self.zoom_factor // 2
+            qp.drawLine(center, 0, center, 150)
+            qp.drawLine(0, center, 150, center)
+            qp.end()
+            
+            self.update()
+        except:
+            pass
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.drawPixmap(0, 0, self.pixmap)
+
+class RecordingThread(QThread):
+    action_recorded = pyqtSignal(dict)
+    
+    def __init__(self):
+        super().__init__()
+        self.running = False
+        self.actions = []
+        self.start_time = 0
+        self.last_position = None
+        self.record_movement = True
+        self.movement_threshold = 5  # pixels
+        self.movement_interval = 0.1  # seconds
+        self.last_movement_time = 0
+    
+    def run(self):
+        self.running = True
+        self.start_time = time.time()
+        self.last_position = pyautogui.position()
+        self.last_movement_time = time.time()
+        
+        while self.running:
+            # Record mouse position changes
+            current_pos = pyautogui.position()
+            current_time = time.time()
+            
+            # Record significant mouse movements
+            if self.record_movement and (current_time - self.last_movement_time) >= self.movement_interval:
+                x_diff = abs(current_pos[0] - self.last_position[0])
+                y_diff = abs(current_pos[1] - self.last_position[1])
+                
+                if x_diff > self.movement_threshold or y_diff > self.movement_threshold:
+                    action = {
+                        'type': 'move',
+                        'x': current_pos[0],
+                        'y': current_pos[1],
+                        'time': current_time - self.start_time
+                    }
+                    self.action_recorded.emit(action)
+                    self.actions.append(action)
+                    self.last_position = current_pos
+                    self.last_movement_time = current_time
+            
+            # Small sleep to prevent high CPU usage
+            time.sleep(0.01)
+    
+    def stop(self):
+        self.running = False
+    
+    def add_action(self, action_type, **kwargs):
+        action = {
+            'type': action_type,
+            'time': time.time() - self.start_time,
+            **kwargs
+        }
+        self.actions.append(action)
+        self.action_recorded.emit(action)
+
+class PlaybackThread(QThread):
+    playback_finished = pyqtSignal()
+    action_played = pyqtSignal(int)
+    
+    def __init__(self, actions, speed_factor=1.0, repeat_count=1, randomize=False, randomize_factor=0.1):
+        super().__init__()
+        self.actions = actions
+        self.speed_factor = speed_factor
+        self.repeat_count = repeat_count
+        self.running = False
+        self.randomize = randomize
+        self.randomize_factor = randomize_factor
+    
+    def run(self):
+        self.running = True
+        
+        for _ in range(self.repeat_count):
+            if not self.running:
+                break
+                
+            last_time = 0
+            for i, action in enumerate(self.actions):
+                if not self.running:
+                    break
+                
+                # Calculate delay
+                if i > 0:
+                    delay = (action['time'] - last_time) / self.speed_factor
+                    
+                    # Add randomization if enabled
+                    if self.randomize:
+                        random_factor = 1.0 + (np.random.random() * 2 - 1) * self.randomize_factor
+                        delay *= random_factor
+                    
+                    time.sleep(max(0, delay))
+                
+                # Execute action
+                self._execute_action(action)
+                last_time = action['time']
+                
+                # Emit signal for UI update
+                self.action_played.emit(i)
+        
+        self.running = False
+        self.playback_finished.emit()
+    
+    def _execute_action(self, action):
+        try:
+            if action['type'] == 'click':
+                if self.randomize:
+                    # Add slight randomization to click position
+                    rand_x = action['x'] + int((np.random.random() * 2 - 1) * 3)
+                    rand_y = action['y'] + int((np.random.random() * 2 - 1) * 3)
+                    pyautogui.click(rand_x, rand_y, button=action.get('button', 'left'))
+                else:
+                    pyautogui.click(action['x'], action['y'], button=action.get('button', 'left'))
+                    
+            elif action['type'] == 'move':
+                pyautogui.moveTo(action['x'], action['y'])
+                
+            elif action['type'] == 'keypress':
+                pyautogui.press(action['key'])
+                
+            elif action['type'] == 'keydown':
+                pyautogui.keyDown(action['key'])
+                
+            elif action['type'] == 'keyup':
+                pyautogui.keyUp(action['key'])
+                
+            elif action['type'] == 'scroll':
+                pyautogui.scroll(action['amount'])
+        except Exception as e:
+            print(f"Error executing action: {e}")
+    
+    def stop(self):
+        self.running = False
+
+class DatabaseManager:
+    def __init__(self):
+        self.conn = None
+        self.setup_database()
+    
+    def setup_database(self):
+        try:
+            self.conn = sqlite3.connect('autoclick.db')
+            cursor = self.conn.cursor()
+            
+            # Create users table with role field
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE,
+                password_hash TEXT,
+                role TEXT DEFAULT 'standard',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT
+            )
+            ''')
+            
+            # Create user permissions table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS user_permissions (
+                user_id TEXT,
+                permission TEXT,
+                PRIMARY KEY (user_id, permission),
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+            ''')
+            
+            # Create scripts table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS scripts (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                name TEXT,
+                description TEXT,
+                content TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+            ''')
+            
+            # Create profiles table
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS profiles (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                name TEXT,
+                hotkey TEXT,
+                script_id TEXT,
+                settings TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (id),
+                FOREIGN KEY (script_id) REFERENCES scripts (id)
+            )
+            ''')
+            
+            # Check if admin user exists, if not create one
+            cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+            if cursor.fetchone()[0] == 0:
+                admin_id = str(uuid.uuid4())
+                admin_password = hashlib.sha256("admin123".encode()).hexdigest()
+                cursor.execute(
+                    "INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)",
+                    (admin_id, "admin", admin_password, "admin")
+                )
+                
+                # Add all permissions for admin
+                for permission in PERMISSIONS.keys():
+                    cursor.execute(
+                        "INSERT INTO user_permissions (user_id, permission) VALUES (?, ?)",
+                        (admin_id, permission)
+                    )
+            
+            self.conn.commit()
+        except Exception as e:
+            print(f"Database setup error: {e}")
+    
+    def create_user(self, username, password, role='standard', permissions=None, created_by=None):
+        try:
+            cursor = self.conn.cursor()
+            user_id = str(uuid.uuid4())
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            
+            cursor.execute(
+                "INSERT INTO users (id, username, password_hash, role, created_by) VALUES (?, ?, ?, ?, ?)",
+                (user_id, username, password_hash, role, created_by)
+            )
+            
+            # Add permissions
+            if permissions is None:
+                # Use default permissions for role
+                permissions = DEFAULT_ROLE_PERMISSIONS.get(role, [])
+            
+            for permission in permissions:
+                cursor.execute(
+                    "INSERT INTO user_permissions (user_id, permission) VALUES (?, ?)",
+                    (user_id, permission)
+                )
+            
+            self.conn.commit()
+            return user_id
+        except sqlite3.IntegrityError:
+            return None  # Username already exists
+        except Exception as e:
+            print(f"Error creating user: {e}")
+            return None
+    
+    def authenticate_user(self, username, password):
+        try:
+            cursor = self.conn.cursor()
+            password_hash = hashlib.sha256(password.encode()).hexdigest()
+            
+            cursor.execute(
+                "SELECT id, role FROM users WHERE username = ? AND password_hash = ?",
+                (username, password_hash)
+            )
+            result = cursor.fetchone()
+            return result if result else (None, None)
+        except Exception as e:
+            print(f"Authentication error: {e}")
+            return None, None
+    
+    def get_user_permissions(self, user_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT permission FROM user_permissions WHERE user_id = ?",
+                (user_id,)
+            )
+            return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting user permissions: {e}")
+            return []
+    
+    def get_all_users(self):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT id, username, role, created_at FROM users ORDER BY username"
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Error getting users: {e}")
+            return []
+    
+    def get_user_details(self, user_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT username, role FROM users WHERE id = ?",
+                (user_id,)
+            )
+            return cursor.fetchone()
+        except Exception as e:
+            print(f"Error getting user details: {e}")
+            return None
+    
+    def update_user(self, user_id, role, permissions):
+        try:
+            cursor = self.conn.cursor()
+            
+            # Update role
+            cursor.execute(
+                "UPDATE users SET role = ? WHERE id = ?",
+                (role, user_id)
+            )
+            
+            # Delete existing permissions
+            cursor.execute(
+                "DELETE FROM user_permissions WHERE user_id = ?",
+                (user_id,)
+            )
+            
+            # Add new permissions
+            for permission in permissions:
+                cursor.execute(
+                    "INSERT INTO user_permissions (user_id, permission) VALUES (?, ?)",
+                    (user_id, permission)
+                )
+            
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error updating user: {e}")
+            return False
+    
+    def delete_user(self, user_id):
+        try:
+            cursor = self.conn.cursor()
+            
+            # Delete user permissions
+            cursor.execute(
+                "DELETE FROM user_permissions WHERE user_id = ?",
+                (user_id,)
+            )
+            
+            # Delete user
+            cursor.execute(
+                "DELETE FROM users WHERE id = ?",
+                (user_id,)
+            )
+            
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error deleting user: {e}")
+            return False
+    
+    def save_script(self, user_id, name, description, content):
+        try:
+            cursor = self.conn.cursor()
+            script_id = str(uuid.uuid4())
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            cursor.execute(
+                "INSERT INTO scripts (id, user_id, name, description, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (script_id, user_id, name, description, json.dumps(content), now, now)
+            )
+            self.conn.commit()
+            return script_id
+        except Exception as e:
+            print(f"Error saving script: {e}")
+            return None
+    
+    def update_script(self, script_id, name, description, content):
+        try:
+            cursor = self.conn.cursor()
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            cursor.execute(
+                "UPDATE scripts SET name = ?, description = ?, content = ?, updated_at = ? WHERE id = ?",
+                (name, description, json.dumps(content), now, script_id)
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error updating script: {e}")
+            return False
+    
+    def get_user_scripts(self, user_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT id, name, description, created_at FROM scripts WHERE user_id = ? ORDER BY updated_at DESC",
+                (user_id,)
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Error getting scripts: {e}")
+            return []
+    
+    def get_script(self, script_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "SELECT name, description, content FROM scripts WHERE id = ?",
+                (script_id,)
+            )
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'name': result[0],
+                    'description': result[1],
+                    'content': json.loads(result[2])
+                }
+            return None
+        except Exception as e:
+            print(f"Error getting script: {e}")
+            return None
+    
+    def save_profile(self, user_id, name, hotkey, script_id, settings):
+        try:
+            cursor = self.conn.cursor()
+            profile_id = str(uuid.uuid4())
+            now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            cursor.execute(
+                "INSERT INTO profiles (id, user_id, name, hotkey, script_id, settings, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (profile_id, user_id, name, hotkey, script_id, json.dumps(settings), now, now)
+            )
+            self.conn.commit()
+            return profile_id
+        except Exception as e:
+            print(f"Error saving profile: {e}")
+            return None
+    
+    def get_user_profiles(self, user_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """
+                SELECT p.id, p.name, p.hotkey, s.name 
+                FROM profiles p
+                JOIN scripts s ON p.script_id = s.id
+                WHERE p.user_id = ?
+                ORDER BY p.updated_at DESC
+                """,
+                (user_id,)
+            )
+            return cursor.fetchall()
+        except Exception as e:
+            print(f"Error getting profiles: {e}")
+            return []
+    
+    def get_profile(self, profile_id):
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                """
+                SELECT p.name, p.hotkey, p.script_id, p.settings, s.content
+                FROM profiles p
+                JOIN scripts s ON p.script_id = s.id
+                WHERE p.id = ?
+                """,
+                (profile_id,)
+            )
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'name': result[0],
+                    'hotkey': result[1],
+                    'script_id': result[2],
+                    'settings': json.loads(result[3]),
+                    'script_content': json.loads(result[4])
+                }
+            return None
+        except Exception as e:
+            print(f"Error getting profile: {e}")
+            return None
+    
+    def close(self):
+        if self.conn:
+            self.conn.close()
+
+class LoginDialog(QWidget):
+    login_successful = pyqtSignal(str, str, str, list)  # user_id, username, role, permissions
+    
+    def __init__(self, db_manager):
+        super().__init__()
+        self.db_manager = db_manager
+        self.initUI()
+    
+    def initUI(self):
+        self.setWindowTitle('Auto Click - Login')
+        self.setFixedSize(400, 300)
+        
+        layout = QVBoxLayout()
+        
+        # Logo or title
+        title_label = QLabel("Auto Click")
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("font-size: 24px; font-weight: bold; margin: 20px;")
+        layout.addWidget(title_label)
+        
+        # Login form
+        form_layout = QFormLayout()
+        
+        self.username_input = QLineEdit()
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        
+        form_layout.addRow("Username:", self.username_input)
+        form_layout.addRow("Password:", self.password_input)
+        
+        form_container = QWidget()
+        form_container.setLayout(form_layout)
+        layout.addWidget(form_container)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.login_btn = QPushButton("Login")
+        self.login_btn.clicked.connect(self.login)
+        
+        self.register_btn = QPushButton("Register")
+        self.register_btn.clicked.connect(self.register)
+        
+        button_layout.addWidget(self.login_btn)
+        button_layout.addWidget(self.register_btn)
+        
+        button_container = QWidget()
+        button_container.setLayout(button_layout)
+        layout.addWidget(button_container)
+        
+        # Status message
+        self.status_label = QLabel("")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setStyleSheet("color: red;")
+        layout.addWidget(self.status_label)
+        
+        self.setLayout(layout)
+    
+    def login(self):
+        username = self.username_input.text().strip()
+        password = self.password_input.text()
+        
+        if not username or not password:
+            self.status_label.setText("Please enter both username and password")
+            return
+        
+        user_id, role = self.db_manager.authenticate_user(username, password)
+        if user_id:
+            permissions = self.db_manager.get_user_permissions(user_id)
+            self.login_successful.emit(user_id, username, role, permissions)
+            self.close()
+        else:
+            self.status_label.setText("Invalid username or password")
+    
+    def register(self):
+        username = self.username_input.text().strip()
+        password = self.password_input.text()
+        
+        if not username or not password:
+            self.status_label.setText("Please enter both username and password")
+            return
+        
+        if len(password) < 6:
+            self.status_label.setText("Password must be at least 6 characters")
+            return
+        
+        user_id = self.db_manager.create_user(username, password)
+        if user_id:
+            self.status_label.setText("Registration successful! You can now login.")
+            self.status_label.setStyleSheet("color: green;")
+        else:
+            self.status_label.setText("Username already exists")
+
+class UserManagementDialog(QDialog):
+    def __init__(self, db_manager, parent=None):
+        super().__init__(parent)
+        self.db_manager = db_manager
+        self.initUI()
+        self.load_users()
+    
+    def initUI(self):
+        self.setWindowTitle("User Management")
+        self.setMinimumSize(800, 500)
+        
+        layout = QVBoxLayout()
+        
+        # User table
+        self.user_table = QTableWidget()
+        self.user_table.setColumnCount(4)
+        self.user_table.setHorizontalHeaderLabels(["Username", "Role", "Created", "Actions"])
+        self.user_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.user_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.user_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.user_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        layout.addWidget(self.user_table)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        
+        self.add_user_btn = QPushButton("Add User")
+        self.add_user_btn.clicked.connect(self.add_user)
+        
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.load_users)
+        
+        button_layout.addWidget(self.add_user_btn)
+        button_layout.addWidget(self.refresh_btn)
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def load_users(self):
+        self.user_table.setRowCount(0)
+        users = self.db_manager.get_all_users()
+        
+        for i, (user_id, username, role, created_at) in enumerate(users):
+            self.user_table.insertRow(i)
+            
+            # Username
+            username_item = QTableWidgetItem(username)
+            username_item.setData(Qt.UserRole, user_id)
+            self.user_table.setItem(i, 0, username_item)
+            
+            # Role
+            role_item = QTableWidgetItem(USER_ROLES.get(role, role))
+            self.user_table.setItem(i, 1, role_item)
+            
+            # Created date
+            created_item = QTableWidgetItem(created_at)
+            self.user_table.setItem(i, 2, created_item)
+            
+            # Actions
+            actions_widget = QWidget()
+            actions_layout = QHBoxLayout()
+            actions_layout.setContentsMargins(0, 0, 0, 0)
+            
+            edit_btn = QPushButton("Edit")
+            edit_btn.clicked.connect(lambda _, uid=user_id: self.edit_user(uid))
+            
+            delete_btn = QPushButton("Delete")
+            delete_btn.clicked.connect(lambda _, uid=user_id: self.delete_user(uid))
+            
+            actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(delete_btn)
+            actions_widget.setLayout(actions_layout)
+            
+            self.user_table.setCellWidget(i, 3, actions_widget)
+    
+    def add_user(self):
+        dialog = UserEditDialog(self.db_manager, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.load_users()
+    
+    def edit_user(self, user_id):
+        dialog = UserEditDialog(self.db_manager, user_id, parent=self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.load_users()
+    
+    def delete_user(self, user_id):
+        # Get user details
+        user_details = self.db_manager.get_user_details(user_id)
+        if not user_details:
+            return
+        
+        username, role = user_details
+        
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self, 
+            "Confirm Delete", 
+            f"Are you sure you want to delete user '{username}'?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            success = self.db_manager.delete_user(user_id)
+            if success:
+                self.load_users()
+            else:
+                QMessageBox.critical(self, "Error", "Failed to delete user.")
+
+class UserEditDialog(QDialog):
+    def __init__(self, db_manager, user_id=None, parent=None):
+        super().__init__(parent)
+        self.db_manager = db_manager
+        self.user_id = user_id
+        self.initUI()
+        
+        if user_id:
+            self.load_user_data()
+    
+    def initUI(self):
+        self.setWindowTitle("Edit User" if self.user_id else "Add User")
+        self.setMinimumWidth(400)
+        
+        layout = QVBoxLayout()
+        
+        # User info form
+        form_layout = QFormLayout()
+        
+        self.username_input = QLineEdit()
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.Password)
+        
+        self.role_combo = QComboBox()
+        for role_id, role_name in USER_ROLES.items():
+            self.role_combo.addItem(role_name, role_id)
+        
+        form_layout.addRow("Username:", self.username_input)
+        if not self.user_id:  # Only show password field for new users
+            form_layout.addRow("Password:", self.password_input)
+        form_layout.addRow("Role:", self.role_combo)
+        
+        layout.addLayout(form_layout)
+        
+        # Permissions group
+        permissions_group = QGroupBox("Permissions")
+        permissions_layout = QVBoxLayout()
+        
+        self.permission_checkboxes = {}
+        for perm_id, perm_name in PERMISSIONS.items():
+            checkbox = QCheckBox(perm_name)
+            self.permission_checkboxes[perm_id] = checkbox
+            permissions_layout.addWidget(checkbox)
+        
+        permissions_group.setLayout(permissions_layout)
+        layout.addWidget(permissions_group)
+        
+        # Role presets
+        preset_layout = QHBoxLayout()
+        preset_label = QLabel("Apply preset:")
+        preset_layout.addWidget(preset_label)
+        
+        for role_id, role_name in USER_ROLES.items():
+            preset_btn = QPushButton(role_name)
+            preset_btn.clicked.connect(lambda _, r=role_id: self.apply_role_preset(r))
+            preset_layout.addWidget(preset_btn)
+        
+        layout.addLayout(preset_layout)
+        
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(self.accept)
+        button_box.rejected.connect(self.reject)
+        layout.addWidget(button_box)
+        
+        self.setLayout(layout)
+    
+    def load_user_data(self):
+        # Get user details
+        user_details = self.db_manager.get_user_details(self.user_id)
+        if not user_details:
+            return
+        
+        username, role = user_details
+        
+        # Set username and role
+        self.username_input.setText(username)
+        self.username_input.setReadOnly(True)  # Can't change username
+        
+        # Set role in combo box
+        index = self.role_combo.findData(role)
+        if index >= 0:
+            self.role_combo.setCurrentIndex(index)
+        
+        # Get user permissions
+        permissions = self.db_manager.get_user_permissions(self.user_id)
+        
+        # Set permission checkboxes
+        for perm_id, checkbox in self.permission_checkboxes.items():
+            checkbox.setChecked(perm_id in permissions)
+    
+    def apply_role_preset(self, role):
+        # Set role in combo box
+        index = self.role_combo.findData(role)
+        if index >= 0:
+            self.role_combo.setCurrentIndex(index)
+        
+        # Get default permissions for this role
+        permissions = DEFAULT_ROLE_PERMISSIONS.get(role, [])
+        
+        # Set permission checkboxes
+        for perm_id, checkbox in self.permission_checkboxes.items():
+            checkbox.setChecked(perm_id in permissions)
+    
+    def accept(self):
+        username = self.username_input.text().strip()
+        role = self.role_combo.currentData()
+        
+        # Get selected permissions
+        permissions = [
+            perm_id for perm_id, checkbox in self.permission_checkboxes.items()
+            if checkbox.isChecked()
+        ]
+        
+        if not username:
+            QMessageBox.warning(self, "Warning", "Please enter a username.")
+            return
+        
+        if not self.user_id:
+            # Creating new user
+            password = self.password_input.text()
+            if not password:
+                QMessageBox.warning(self, "Warning", "Please enter a password.")
+                return
+            
+            if len(password) < 6:
+                QMessageBox.warning(self, "Warning", "Password must be at least 6 characters.")
+                return
+            
+            user_id = self.db_manager.create_user(username, password, role, permissions)
+            if not user_id:
+                QMessageBox.critical(self, "Error", "Failed to create user. Username may already exist.")
+                return
+        else:
+            # Updating existing user
+            success = self.db_manager.update_user(self.user_id, role, permissions)
+            if not success:
+                QMessageBox.critical(self, "Error", "Failed to update user.")
+                return
+        
+        super().accept()
 
 class ImageRecognitionTool:
     def __init__(self):
@@ -1383,6 +1812,8 @@ class AutoClickApp(QMainWindow):
         self.image_recognition = ImageRecognitionTool()
         self.user_id = None
         self.username = None
+        self.role = None
+        self.permissions = []
         self.recording_thread = None
         self.playback_thread = None
         self.current_actions = []
@@ -1399,14 +1830,16 @@ class AutoClickApp(QMainWindow):
         self.login_dialog.login_successful.connect(self.on_login_successful)
         self.login_dialog.show()
     
-    def on_login_successful(self, user_id, username):
+    def on_login_successful(self, user_id, username, role, permissions):
         self.user_id = user_id
         self.username = username
+        self.role = role
+        self.permissions = permissions
         self.initUI()
         self.show()
     
     def initUI(self):
-        self.setWindowTitle(f'Auto Click - {self.username}')
+        self.setWindowTitle(f'Auto Click - {self.username} ({USER_ROLES.get(self.role, self.role)})')
         self.setGeometry(100, 100, 1000, 700)
         
         # Create main tab widget
@@ -1428,6 +1861,12 @@ class AutoClickApp(QMainWindow):
         self.tabs.addTab(self.profiles_tab, "Profiles")
         self.tabs.addTab(self.settings_tab, "Settings")
         
+        # Add user management tab for admins
+        if 'manage_users' in self.permissions:
+            self.users_tab = QWidget()
+            self.setup_users_tab()
+            self.tabs.addTab(self.users_tab, "User Management")
+        
         self.setCentralWidget(self.tabs)
         
         # Setup system tray
@@ -1435,6 +1874,9 @@ class AutoClickApp(QMainWindow):
         
         # Load settings
         self.load_settings()
+        
+        # Apply permissions
+        self.apply_permissions()
     
     def setup_recorder_tab(self):
         layout = QVBoxLayout()
@@ -1655,7 +2097,6 @@ class AutoClickApp(QMainWindow):
         self.movement_interval_input.setSingleStep(0.01)
         
         recording_layout.addRow("Record mouse movement:", self.record_mouse_movement_cb)
-        recording_```python
         recording_layout.addRow("Movement threshold (px):", self.movement_threshold_input)
         recording_layout.addRow("Movement interval (s):", self.movement_interval_input)
         
@@ -1696,6 +2137,28 @@ class AutoClickApp(QMainWindow):
         
         self.settings_tab.setLayout(layout)
     
+    def setup_users_tab(self):
+        layout = QVBoxLayout()
+        
+        # Instructions
+        instructions = QLabel("Manage users and their permissions. Click 'Manage Users' to open the user management dialog.")
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+        
+        # Open user management button
+        manage_users_btn = QPushButton("Manage Users")
+        manage_users_btn.clicked.connect(self.open_user_management)
+        layout.addWidget(manage_users_btn)
+        
+        # Add spacer
+        layout.addStretch()
+        
+        self.users_tab.setLayout(layout)
+    
+    def open_user_management(self):
+        dialog = UserManagementDialog(self.db_manager, self)
+        dialog.exec_()
+    
     def setup_system_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(QIcon.fromTheme("input-mouse"))
@@ -1717,6 +2180,40 @@ class AutoClickApp(QMainWindow):
         self.tray_icon.activated.connect(self.tray_icon_activated)
         
         self.tray_icon.show()
+    
+    def apply_permissions(self):
+        # Recorder tab permissions
+        can_record = 'record_macros' in self.permissions
+        can_play = 'play_macros' in self.permissions
+        
+        self.record_btn.setEnabled(can_record)
+        self.play_btn.setEnabled(can_play and len(self.current_actions) > 0)
+        self.save_btn.setEnabled(can_record and len(self.current_actions) > 0)
+        
+        # Scripts tab permissions
+        can_edit_scripts = 'edit_scripts' in self.permissions
+        can_import_export = 'import_export' in self.permissions
+        
+        self.delete_script_btn.setEnabled(can_edit_scripts)
+        self.export_script_btn.setEnabled(can_import_export)
+        self.import_script_btn.setEnabled(can_import_export)
+        
+        # Profiles tab permissions
+        can_create_profiles = 'create_profiles' in self.permissions
+        
+        self.new_profile_btn.setEnabled(can_create_profiles)
+        self.delete_profile_btn.setEnabled(can_create_profiles)
+        
+        # Settings tab permissions
+        can_access_advanced = 'advanced_settings' in self.permissions
+        
+        # Disable advanced settings if not permitted
+        if not can_access_advanced:
+            for i in range(self.settings_tab.layout().count()):
+                widget = self.settings_tab.layout().itemAt(i).widget()
+                if isinstance(widget, QGroupBox) and widget.title() == "Advanced Settings":
+                    widget.setEnabled(False)
+                    break
     
     def tray_icon_activated(self, reason):
         if reason == QSystemTrayIcon.DoubleClick:
@@ -1751,12 +2248,17 @@ class AutoClickApp(QMainWindow):
                 self.run_profile(profile_id)
     
     def toggle_recording(self):
+        # Check permission
+        if 'record_macros' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to record macros.")
+            return
+            
         if self.recording_thread and self.recording_thread.running:
             # Stop recording
             self.recording_thread.stop()
             self.recording_thread.wait()
             self.record_btn.setText("Start Recording")
-            self.play_btn.setEnabled(True)
+            self.play_btn.setEnabled('play_macros' in self.permissions)
             self.save_btn.setEnabled(True)
         else:
             # Start recording
@@ -1816,6 +2318,11 @@ class AutoClickApp(QMainWindow):
         return f"[{action['time']:.2f}s] {action['type']}"
     
     def play_recording(self):
+        # Check permission
+        if 'play_macros' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to play macros.")
+            return
+            
         if not self.current_actions:
             QMessageBox.warning(self, "Warning", "No actions to play.")
             return
@@ -1846,7 +2353,7 @@ class AutoClickApp(QMainWindow):
     
     def on_playback_finished(self):
         # Re-enable UI elements
-        self.record_btn.setEnabled(True)
+        self.record_btn.setEnabled('record_macros' in self.permissions)
         self.play_btn.setText("Play")
         self.play_btn.clicked.disconnect()
         self.play_btn.clicked.connect(self.play_recording)
@@ -1870,6 +2377,11 @@ class AutoClickApp(QMainWindow):
         self.save_btn.setEnabled(False)
     
     def save_script(self):
+        # Check permission
+        if 'edit_scripts' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to save scripts.")
+            return
+            
         name = self.script_name_input.text().strip()
         description = self.script_desc_input.toPlainText().strip()
         
@@ -1920,6 +2432,11 @@ class AutoClickApp(QMainWindow):
             self.scripts_list.addItem(item)
     
     def load_script(self, item):
+        # Check permission
+        if 'play_macros' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to load scripts.")
+            return
+            
         script_id = item.data(Qt.UserRole)
         script = self.db_manager.get_script(script_id)
         
@@ -1940,13 +2457,18 @@ class AutoClickApp(QMainWindow):
                 self.actions_list.addItem(action_str)
             
             # Enable play button
-            self.play_btn.setEnabled(True)
-            self.save_btn.setEnabled(True)
+            self.play_btn.setEnabled('play_macros' in self.permissions)
+            self.save_btn.setEnabled('edit_scripts' in self.permissions)
             
             # Switch to recorder tab
             self.tabs.setCurrentWidget(self.recorder_tab)
     
     def delete_script(self):
+        # Check permission
+        if 'edit_scripts' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to delete scripts.")
+            return
+            
         selected_items = self.scripts_list.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "Warning", "Please select a script to delete.")
@@ -1976,6 +2498,11 @@ class AutoClickApp(QMainWindow):
                 self.clear_recording()
     
     def export_script(self):
+        # Check permission
+        if 'import_export' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to export scripts.")
+            return
+            
         selected_items = self.scripts_list.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "Warning", "Please select a script to export.")
@@ -2007,6 +2534,11 @@ class AutoClickApp(QMainWindow):
                     QMessageBox.critical(self, "Error", f"Failed to export script: {e}")
     
     def import_script(self):
+        # Check permission
+        if 'import_export' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to import scripts.")
+            return
+            
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Import Script",
@@ -2050,6 +2582,11 @@ class AutoClickApp(QMainWindow):
             self.profiles_list.addItem(item)
     
     def create_profile(self):
+        # Check permission
+        if 'create_profiles' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to create profiles.")
+            return
+            
         # Get scripts for selection
         scripts = self.db_manager.get_user_scripts(self.user_id)
         if not scripts:
@@ -2163,6 +2700,11 @@ class AutoClickApp(QMainWindow):
                 QMessageBox.critical(self, "Error", "Failed to create profile.")
     
     def edit_profile(self, item):
+        # Check permission
+        if 'create_profiles' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to edit profiles.")
+            return
+            
         profile_id = item.data(Qt.UserRole)
         profile = self.db_manager.get_profile(profile_id)
         
@@ -2192,13 +2734,18 @@ class AutoClickApp(QMainWindow):
                 self.randomize_cb.setChecked(profile['settings'].get('randomize', False))
                 
                 # Enable play button
-                self.play_btn.setEnabled(True)
-                self.save_btn.setEnabled(True)
+                self.play_btn.setEnabled('play_macros' in self.permissions)
+                self.save_btn.setEnabled('edit_scripts' in self.permissions)
                 
                 # Switch to recorder tab
                 self.tabs.setCurrentWidget(self.recorder_tab)
     
     def delete_profile(self):
+        # Check permission
+        if 'create_profiles' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to delete profiles.")
+            return
+            
         selected_items = self.profiles_list.selectedItems()
         if not selected_items:
             QMessageBox.warning(self, "Warning", "Please select a profile to delete.")
@@ -2228,6 +2775,10 @@ class AutoClickApp(QMainWindow):
             self.load_user_profiles()
     
     def run_profile(self, profile_id):
+        # Check permission
+        if 'play_macros' not in self.permissions:
+            return  # Silently fail when triggered by hotkey
+            
         profile = self.db_manager.get_profile(profile_id)
         
         if profile and 'script_content' in profile:
@@ -2268,6 +2819,11 @@ class AutoClickApp(QMainWindow):
                 }
     
     def save_settings(self):
+        # Check permission for advanced settings
+        if 'advanced_settings' not in self.permissions:
+            QMessageBox.warning(self, "Permission Denied", "You don't have permission to change advanced settings.")
+            return
+            
         settings = QSettings("AutoClick", "AutoClickApp")
         
         # General settings
