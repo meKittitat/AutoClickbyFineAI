@@ -2,6 +2,9 @@
 Configuration constants for the Auto Click application.
 """
 
+# Application version
+APP_VERSION = "1.0.0"
+
 # Define user roles and permissions
 USER_ROLES = {
     'admin': 'Administrator',
@@ -24,6 +27,8 @@ PERMISSIONS = {
 
 # Default permissions for each role
 DEFAULT_ROLE_PERMISSIONS = {
+    'admin': list(PERMISSIONS.keys()),
+    'power_```python
     'admin': list(PERMISSIONS.keys()),
     'power_user': ['record_macros', 'play_macros', 'edit_scripts', 'import_export', 'create_profiles', 'use_image_recognition'],
     'standard': ['record_macros', 'play_macros', 'edit_scripts', 'create_profiles'],
