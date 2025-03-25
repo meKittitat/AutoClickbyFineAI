@@ -4,8 +4,45 @@ Settings tab for the Auto Click application.
 import sys
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QGroupBox, QFormLayout, 
                             QCheckBox, QSpinBox, QDoubleSpinBox, QLineEdit,
-                            QPushButton, QMessageBox)
+                            QPushButton, QMessageBox, QComboBox)
 from PyQt5.QtCore import QSettings
+
+class HotkeyComboBox(QComboBox):
+    """Custom combobox for selecting hotkeys"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.populate_hotkeys()
+        
+    def populate_hotkeys(self):
+        # Add function keys
+        for i in range(1, 13):
+            self.addItem(f"F{i}", f"f{i}")
+        
+        # Add letter keys
+        for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+            self.addItem(c, c.lower())
+        
+        # Add number keys
+        for i in range(10):
+            self.addItem(str(i), str(i))
+        
+        # Add special keys
+        special_keys = [
+            ("Escape", "esc"),
+            ("Tab", "tab"),
+            ("Space", "space"),
+            ("Enter", "enter"),
+            ("Backspace", "backspace"),
+            ("Insert", "insert"),
+            ("Delete", "delete"),
+            ("Home", "home"),
+            ("End", "end"),
+            ("Page Up", "pageup"),
+            ("Page Down", "pagedown")
+        ]
+        
+        for display, value in special_keys:
+            self.addItem(display, value)
 
 class SettingsTab(QWidget):
     def __init__(self, permissions):
@@ -57,11 +94,25 @@ class SettingsTab(QWidget):
         hotkeys_group = QGroupBox("Hotkeys")
         hotkeys_layout = QFormLayout()
         
-        self.stop_hotkey_input = QLineEdit()
-        self.stop_hotkey_input.setText("esc")
-        self.stop_hotkey_input.setReadOnly(True)
+        self.start_record_hotkey = HotkeyComboBox()
+        self.stop_record_hotkey = HotkeyComboBox()
+        self.stop_playback_hotkey = HotkeyComboBox()
         
-        hotkeys_layout.addRow("Stop playback:", self.stop_hotkey_input)
+        # Find default values in the comboboxes
+        start_index = self.start_record_hotkey.findData("f9")
+        stop_index = self.stop_record_hotkey.findData("f10")
+        playback_index = self.stop_playback_hotkey.findData("esc")
+        
+        if start_index >= 0:
+            self.start_record_hotkey.setCurrentIndex(start_index)
+        if stop_index >= 0:
+            self.stop_record_hotkey.setCurrentIndex(stop_index)
+        if playback_index >= 0:
+            self.stop_playback_hotkey.setCurrentIndex(playback_index)
+        
+        hotkeys_layout.addRow("Start recording:", self.start_record_hotkey)
+        hotkeys_layout.addRow("Stop recording:", self.stop_record_hotkey)
+        hotkeys_layout.addRow("Stop playback:", self.stop_playback_hotkey)
         
         hotkeys_group.setLayout(hotkeys_layout)
         layout.addWidget(hotkeys_group)
@@ -114,6 +165,22 @@ class SettingsTab(QWidget):
         self.movement_threshold_input.setValue(settings.value("movement_threshold", 5, type=int))
         self.movement_interval_input.setValue(settings.value("movement_interval", 0.1, type=float))
         
+        # Hotkey settings
+        start_record = settings.value("start_record_hotkey", "f9")
+        stop_record = settings.value("stop_record_hotkey", "f10")
+        stop_playback = settings.value("stop_playback_hotkey", "esc")
+        
+        start_index = self.start_record_hotkey.findData(start_record)
+        stop_index = self.stop_record_hotkey.findData(stop_record)
+        playback_index = self.stop_playback_hotkey.findData(stop_playback)
+        
+        if start_index >= 0:
+            self.start_record_hotkey.setCurrentIndex(start_index)
+        if stop_index >= 0:
+            self.stop_record_hotkey.setCurrentIndex(stop_index)
+        if playback_index >= 0:
+            self.stop_playback_hotkey.setCurrentIndex(playback_index)
+        
         # Advanced settings
         self.randomize_factor_input.setValue(settings.value("randomize_factor", 0.1, type=float))
     
@@ -133,6 +200,11 @@ class SettingsTab(QWidget):
         settings.setValue("record_mouse_movement", self.record_mouse_movement_cb.isChecked())
         settings.setValue("movement_threshold", self.movement_threshold_input.value())
         settings.setValue("movement_interval", self.movement_interval_input.value())
+        
+        # Hotkey settings
+        settings.setValue("start_record_hotkey", self.start_record_hotkey.currentData())
+        settings.setValue("stop_record_hotkey", self.stop_record_hotkey.currentData())
+        settings.setValue("stop_playback_hotkey", self.stop_playback_hotkey.currentData())
         
         # Advanced settings
         settings.setValue("randomize_factor", self.randomize_factor_input.value())
@@ -177,3 +249,10 @@ class SettingsTab(QWidget):
     
     def get_randomize_factor(self):
         return self.randomize_factor_input.value()
+    
+    def get_hotkeys(self):
+        return {
+            'start_record': self.start_record_hotkey.currentData(),
+            'stop_record': self.stop_record_hotkey.currentData(),
+            'stop_playback': self.stop_playback_hotkey.currentData()
+        }

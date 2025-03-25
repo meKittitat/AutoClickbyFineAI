@@ -4,11 +4,11 @@ Recorder tab for the Auto Click application.
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                             QLabel, QGroupBox, QFormLayout, QLineEdit, QTextEdit,
                             QDoubleSpinBox, QSpinBox, QCheckBox, QListWidget,
-                            QMessageBox)
+                            QMessageBox, QListWidgetItem)
 from PyQt5.QtCore import Qt, QTimer
 
 import pyautogui
-from pynput import mouse
+from pynput import mouse, keyboard
 
 from autoclick.ui.widgets import PixelDisplayWidget
 from autoclick.core.recording import RecordingThread, format_action
@@ -24,6 +24,7 @@ class RecorderTab(QWidget):
         self.recording_thread = None
         self.playback_thread = None
         self.mouse_listener = None
+        self.keyboard_listener = None
         
         self.current_actions = []
         self.current_script_id = None
@@ -106,9 +107,16 @@ class RecorderTab(QWidget):
         
         self.randomize_cb = QCheckBox("Add randomization")
         
+        # Add randomization radius setting
+        self.randomize_radius = QSpinBox()
+        self.randomize_radius.setRange(1, 50)
+        self.randomize_radius.setValue(3)
+        self.randomize_radius.setSuffix(" px")
+        
         playback_layout.addRow("Speed:", self.speed_input)
         playback_layout.addRow("Repeat:", self.repeat_input)
-        playback_layout.addRow("", self.randomize_cb)
+        playback_layout.addRow("Randomize:", self.randomize_cb)
+        playback_layout.addRow("Random radius:", self.randomize_radius)
         
         controls_layout.addLayout(playback_layout)
         
@@ -137,6 +145,8 @@ class RecorderTab(QWidget):
         actions_layout = QVBoxLayout()
         
         self.actions_list = QListWidget()
+        self.actions_list.setSelectionMode(QListWidget.SingleSelection)
+        self.actions_list.itemDoubleClicked.connect(self.edit_action)
         actions_layout.addWidget(self.actions_list)
         
         actions_group.setLayout(actions_layout)
@@ -169,8 +179,8 @@ class RecorderTab(QWidget):
             # Get pixel color
             pixel_color = pyautogui.screenshot().getpixel((x, y))
             self.color_label.setText(f"RGB: {pixel_color[0]}, {pixel_color[1]}, {pixel_color[2]}")
-        except:
-            pass
+        except Exception as e:
+            print(f"Error updating coordinates: {e}")
     
     def toggle_recording(self):
         # Check permission
@@ -182,6 +192,13 @@ class RecorderTab(QWidget):
             # Stop recording
             self.recording_thread.stop()
             self.recording_thread.wait()
+            
+            # Stop listeners
+            if self.mouse_listener:
+                self.mouse_listener.stop()
+            if self.keyboard_listener:
+                self.keyboard_listener.stop()
+                
             self.record_btn.setText("Start Recording")
             self.play_btn.setEnabled('play_macros' in self.permissions)
             self.save_btn.setEnabled('edit_scripts' in self.permissions)
@@ -200,30 +217,124 @@ class RecorderTab(QWidget):
             self.play_btn.setEnabled(False)
             self.save_btn.setEnabled(False)
             
-            # Setup mouse listener
-            self.setup_mouse_listener()
+            # Setup mouse and keyboard listeners
+            self.setup_listeners()
     
-    def setup_mouse_listener(self):
-        # Use PyAutoGUI's mouseDown and mouseUp events
+    def setup_listeners(self):
+        # Mouse listener for clicks
         def on_mouse_click(x, y, button, pressed):
             if not self.recording_thread or not self.recording_thread.running:
-                return
+                return False
             
             if pressed:
                 self.recording_thread.add_action('click', x=x, y=y, button=button)
+            return True
         
-        # Use pynput for mouse events
+        # Keyboard listener for key presses
+        def on_key_press(key):
+            if not self.recording_thread or not self.recording_thread.running:
+                return False
+            
+            try:
+                # For normal characters
+                key_char = key.char
+                self.recording_thread.add_action('keypress', key=key_char)
+            except AttributeError:
+                # For special keys
+                key_name = str(key).replace('Key.', '')
+                self.recording_thread.add_action('keypress', key=key_name)
+            return True
+        
+        # Start listeners
         self.mouse_listener = mouse.Listener(on_click=on_mouse_click)
         self.mouse_listener.start()
+        
+        self.keyboard_listener = keyboard.Listener(on_press=on_key_press)
+        self.keyboard_listener.start()
     
     def on_action_recorded(self, action):
         # Add action to the list widget
         action_str = format_action(action)
-        self.actions_list.addItem(action_str)
+        item = QListWidgetItem(action_str)
+        item.setData(Qt.UserRole, action)
+        self.actions_list.addItem(item)
         self.actions_list.scrollToBottom()
         
         # Add to current actions
         self.current_actions.append(action)
+    
+    def edit_action(self, item):
+        # Only allow editing when not recording
+        if self.recording_thread and self.recording_thread.running:
+            return
+            
+        # Get the action index
+        index = self.actions_list.row(item)
+        action = self.current_actions[index]
+        
+        # Create a simple dialog to edit the action
+        from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit Action")
+        layout = QVBoxLayout()
+        
+        form = QFormLayout()
+        
+        # Different fields based on action type
+        if action['type'] == 'click':
+            x_input = QSpinBox()
+            x_input.setRange(0, 9999)
+            x_input.setValue(action['x'])
+            
+            y_input = QSpinBox()
+            y_input.setRange(0, 9999)
+            y_input.setValue(action['y'])
+            
+            form.addRow("X coordinate:", x_input)
+            form.addRow("Y coordinate:", y_input)
+            
+        elif action['type'] == 'move':
+            x_input = QSpinBox()
+            x_input.setRange(0, 9999)
+            x_input.setValue(action['x'])
+            
+            y_input = QSpinBox()
+            y_input.setRange(0, 9999)
+            y_input.setValue(action['y'])
+            
+            form.addRow("X coordinate:", x_input)
+            form.addRow("Y coordinate:", y_input)
+            
+        elif action['type'] == 'keypress':
+            key_input = QLineEdit()
+            key_input.setText(action['key'])
+            form.addRow("Key:", key_input)
+            
+        layout.addLayout(form)
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        dialog.setLayout(layout)
+        
+        # If dialog is accepted, update the action
+        if dialog.exec_() == QDialog.Accepted:
+            if action['type'] == 'click' or action['type'] == 'move':
+                action['x'] = x_input.value()
+                action['y'] = y_input.value()
+            elif action['type'] == 'keypress':
+                action['key'] = key_input.text()
+                
+            # Update the list item
+            item.setText(format_action(action))
+            item.setData(Qt.UserRole, action)
+            
+            # Update the action in the list
+            self.current_actions[index] = action
     
     def play_recording(self):
         # Check permission
@@ -247,7 +358,7 @@ class RecorderTab(QWidget):
             self.speed_input.value(),
             self.repeat_input.value(),
             self.randomize_cb.isChecked(),
-            0.1  # Default randomize factor
+            self.randomize_radius.value() / 10.0  # Convert to randomize factor
         )
         self.playback_thread.playback_finished.connect(self.on_playback_finished)
         self.playback_thread.action_played.connect(self.on_action_played)
@@ -341,7 +452,9 @@ class RecorderTab(QWidget):
         self.actions_list.clear()
         for action in self.current_actions:
             action_str = format_action(action)
-            self.actions_list.addItem(action_str)
+            item = QListWidgetItem(action_str)
+            item.setData(Qt.UserRole, action)
+            self.actions_list.addItem(item)
         
         # Enable play button
         self.play_btn.setEnabled('play_macros' in self.permissions)

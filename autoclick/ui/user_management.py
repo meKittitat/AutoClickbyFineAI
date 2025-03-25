@@ -77,10 +77,14 @@ class UserManagementDialog(QDialog):
             edit_btn = QPushButton("Edit")
             edit_btn.clicked.connect(lambda _, uid=user_id: self.edit_user(uid))
             
+            reset_pwd_btn = QPushButton("Reset Password")
+            reset_pwd_btn.clicked.connect(lambda _, uid=user_id: self.reset_password(uid))
+            
             delete_btn = QPushButton("Delete")
             delete_btn.clicked.connect(lambda _, uid=user_id: self.delete_user(uid))
             
             actions_layout.addWidget(edit_btn)
+            actions_layout.addWidget(reset_pwd_btn)
             actions_layout.addWidget(delete_btn)
             actions_widget.setLayout(actions_layout)
             
@@ -95,6 +99,31 @@ class UserManagementDialog(QDialog):
         dialog = UserEditDialog(self.db_manager, user_id, parent=self)
         if dialog.exec_() == QDialog.Accepted:
             self.load_users()
+    
+    def reset_password(self, user_id):
+        # Get user details
+        user_details = self.db_manager.get_user_details(user_id)
+        if not user_details:
+            return
+        
+        username, _ = user_details
+        
+        # Confirm reset
+        reply = QMessageBox.question(
+            self, 
+            "Confirm Password Reset", 
+            f"Are you sure you want to reset the password for user '{username}'?\\n\\n"
+            "The user will be required to set a new password on next login.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            success = self.db_manager.reset_user_password(user_id)
+            if success:
+                QMessageBox.information(self, "Success", f"Password for user '{username}' has been reset.")
+            else:
+                QMessageBox.critical(self, "Error", "Failed to reset password.")
     
     def delete_user(self, user_id):
         # Get user details

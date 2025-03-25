@@ -31,6 +31,12 @@ class DatabaseManager:
             )
             ''')
             
+            # Check if password_reset column exists, if not add it
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'password_reset' not in columns:
+                cursor.execute("ALTER TABLE users ADD COLUMN password_reset INTEGER DEFAULT 0")
+            
             # Create user permissions table
             cursor.execute('''
             CREATE TABLE IF NOT EXISTS user_permissions (
@@ -127,15 +133,96 @@ class DatabaseManager:
             cursor = self.conn.cursor()
             password_hash = hashlib.sha256(password.encode()).hexdigest()
             
-            cursor.execute(
-                "SELECT id, role FROM users WHERE username = ? AND password_hash = ?",
-                (username, password_hash)
-            )
-            result = cursor.fetchone()
-            return result if result else (None, None)
+            # Check if password_reset column exists
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'password_reset' in columns:
+                cursor.execute(
+                    "SELECT id, role, password_reset FROM users WHERE username = ? AND password_hash = ?",
+                    (username, password_hash)
+                )
+                result = cursor.fetchone()
+                
+                if result:
+                    user_id, role, password_reset = result
+                    
+                    # Check if password reset is required
+                    if password_reset == 1:
+                        return user_id, "reset_required"
+                    else:
+                        return user_id, role
+            else:
+                # Fallback for older database schema
+                cursor.execute(
+                    "SELECT id, role FROM users WHERE username = ? AND password_hash = ?",
+                    (username, password_hash)
+                )
+                result = cursor.fetchone()
+                if result:
+                    return result
+            
+            return None, None
         except Exception as e:
             print(f"Authentication error: {e}")
             return None, None
+    
+    def reset_user_password(self, user_id):
+        """Mark a user's password as needing reset"""
+        try:
+            cursor = self.conn.cursor()
+            
+            # Check if password_reset column exists
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'password_reset' in columns:
+                cursor.execute(
+                    "UPDATE users SET password_reset = 1 WHERE id = ?",
+                    (user_id,)
+                )
+                self.conn.commit()
+                return True
+            else:
+                # Add the column if it doesn't exist
+                cursor.execute("ALTER TABLE users ADD COLUMN password_reset INTEGER DEFAULT 0")
+                cursor.execute(
+                    "UPDATE users SET password_reset = 1 WHERE id = ?",
+                    (user_id,)
+                )
+                self.conn.commit()
+                return True
+        except Exception as e:
+            print(f"Error resetting password: {e}")
+            return False
+    
+    def update_user_password(self, user_id, new_password):
+        """Update a user's password and clear the reset flag"""
+        try:
+            cursor = self.conn.cursor()
+            password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+            
+            # Check if password_reset column exists
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
+            if 'password_reset' in columns:
+                cursor.execute(
+                    "UPDATE users SET password_hash = ?, password_reset = 0 WHERE id = ?",
+                    (password_hash, user_id)
+                )
+            else:
+                # Fallback for older database schema
+                cursor.execute(
+                    "UPDATE users SET password_hash = ? WHERE id = ?",
+                    (password_hash, user_id)
+                )
+                
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error updating password: {e}")
+            return False
     
     def get_user_permissions(self, user_id):
         try:

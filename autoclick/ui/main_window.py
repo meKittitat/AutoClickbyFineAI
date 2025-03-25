@@ -78,6 +78,9 @@ class MainWindow(QMainWindow):
         
         # Setup global hotkeys
         keyboard.on_press(self.on_key_press)
+        
+        # Load settings
+        self.load_settings()
     
     def setup_users_tab(self):
         layout = QVBoxLayout()
@@ -127,10 +130,32 @@ class MainWindow(QMainWindow):
         if reason == QSystemTrayIcon.DoubleClick:
             self.show()
     
+    def load_settings(self):
+        # Load hotkeys
+        settings = QSettings("AutoClick", "AutoClickApp")
+        self.start_record_hotkey = settings.value("start_record_hotkey", "f9")
+        self.stop_record_hotkey = settings.value("stop_record_hotkey", "f10")
+        self.stop_playback_hotkey = settings.value("stop_playback_hotkey", "esc")
+    
     def on_key_press(self, event):
-        # Check for stop hotkey (ESC)
-        if event.name == 'esc' and self.playback_thread and self.playback_thread.running:
-            self.stop_playback()
+        # Check for recording hotkeys
+        if event.name == self.start_record_hotkey and 'record_macros' in self.permissions:
+            # Switch to recorder tab and start recording
+            self.tabs.setCurrentWidget(self.recorder_tab)
+            if not self.recorder_tab.recording_thread or not self.recorder_tab.recording_thread.running:
+                self.recorder_tab.toggle_recording()
+        
+        elif event.name == self.stop_record_hotkey and 'record_macros' in self.permissions:
+            # Stop recording if active
+            if self.recorder_tab.recording_thread and self.recorder_tab.recording_thread.running:
+                self.recorder_tab.toggle_recording()
+        
+        # Check for stop playback hotkey
+        elif event.name == self.stop_playback_hotkey:
+            if self.playback_thread and self.playback_thread.running:
+                self.stop_playback()
+            elif self.recorder_tab.playback_thread and self.recorder_tab.playback_thread.running:
+                self.recorder_tab.stop_playback()
         
         # Check for profile hotkeys
         active_profiles = self.profiles_tab.get_active_profiles()

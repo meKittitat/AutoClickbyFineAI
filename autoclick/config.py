@@ -2,6 +2,9 @@
 Configuration constants for the Auto Click application.
 """
 
+# Application version
+APP_VERSION = "1.0.0"
+
 # Define user roles and permissions
 USER_ROLES = {
     'admin': 'Administrator',
