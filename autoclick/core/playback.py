@@ -10,14 +10,12 @@ class PlaybackThread(QThread):
     playback_finished = pyqtSignal()
     action_played = pyqtSignal(int)
     
-    def __init__(self, actions, speed_factor=1.0, repeat_count=1, randomize=False, randomize_factor=0.1):
+    def __init__(self, actions, speed_factor=1.0, repeat_count=1):
         super().__init__()
         self.actions = actions
         self.speed_factor = speed_factor
         self.repeat_count = repeat_count
         self.running = False
-        self.randomize = randomize
-        self.randomize_factor = randomize_factor
     
     def run(self):
         self.running = True
@@ -33,14 +31,18 @@ class PlaybackThread(QThread):
                 
                 # Calculate delay
                 if i > 0:
-                    delay = (action['time'] - last_time) / self.speed_factor
+                    delay_ms = (action['time'] - last_time) / self.speed_factor
                     
-                    # Add randomization if enabled
-                    if self.randomize:
-                        random_factor = 1.0 + (np.random.random() * 2 - 1) * self.randomize_factor
-                        delay *= random_factor
+                    # Add randomization if enabled for this action
+                    random_time = action.get('random_time', 0)
+                    if random_time > 0:
+                        delay_ms += np.random.randint(-random_time, random_time)
                     
-                    time.sleep(max(0, delay))
+                    # Ensure delay is not negative
+                    delay_ms = max(0, delay_ms)
+                    
+                    # Convert ms to seconds for sleep
+                    time.sleep(delay_ms / 1000.0)
                 
                 # Execute action
                 self._execute_action(action)
@@ -55,13 +57,13 @@ class PlaybackThread(QThread):
     def _execute_action(self, action):
         try:
             if action['type'] == 'click':
-                if self.randomize:
-                    # Calculate pixel radius for randomization (randomize_factor * 30 gives us the pixel radius)
-                    pixel_radius = int(self.randomize_factor * 30)
-                    
-                    # Add slight randomization to click position
-                    rand_x = action['x'] + int((np.random.random() * 2 - 1) * pixel_radius)
-                    rand_y = action['y'] + int((np.random.random() * 2 - 1) * pixel_radius)
+                # Get randomization radius
+                random_radius = action.get('random_radius', 0)
+                
+                if random_radius > 0:
+                    # Add randomization to click position
+                    rand_x = action['x'] + np.random.randint(-random_radius, random_radius)
+                    rand_y = action['y'] + np.random.randint(-random_radius, random_radius)
                     pyautogui.click(rand_x, rand_y, button=action.get('button', 'left'))
                 else:
                     pyautogui.click(action['x'], action['y'], button=action.get('button', 'left'))

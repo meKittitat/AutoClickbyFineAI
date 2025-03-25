@@ -96,40 +96,31 @@ class SettingsTab(QWidget):
         
         self.start_record_hotkey = HotkeyComboBox()
         self.stop_record_hotkey = HotkeyComboBox()
+        self.capture_position_hotkey = HotkeyComboBox()
         self.stop_playback_hotkey = HotkeyComboBox()
         
         # Find default values in the comboboxes
         start_index = self.start_record_hotkey.findData("f9")
         stop_index = self.stop_record_hotkey.findData("f10")
+        capture_index = self.capture_position_hotkey.findData("f11")
         playback_index = self.stop_playback_hotkey.findData("esc")
         
         if start_index >= 0:
             self.start_record_hotkey.setCurrentIndex(start_index)
         if stop_index >= 0:
             self.stop_record_hotkey.setCurrentIndex(stop_index)
+        if capture_index >= 0:
+            self.capture_position_hotkey.setCurrentIndex(capture_index)
         if playback_index >= 0:
             self.stop_playback_hotkey.setCurrentIndex(playback_index)
         
         hotkeys_layout.addRow("Start recording:", self.start_record_hotkey)
         hotkeys_layout.addRow("Stop recording:", self.stop_record_hotkey)
+        hotkeys_layout.addRow("Capture position:", self.capture_position_hotkey)
         hotkeys_layout.addRow("Stop playback:", self.stop_playback_hotkey)
         
         hotkeys_group.setLayout(hotkeys_layout)
         layout.addWidget(hotkeys_group)
-        
-        # Advanced settings
-        advanced_group = QGroupBox("Advanced Settings")
-        advanced_layout = QFormLayout()
-        
-        self.randomize_factor_input = QDoubleSpinBox()
-        self.randomize_factor_input.setRange(0.01, 0.5)
-        self.randomize_factor_input.setValue(0.1)
-        self.randomize_factor_input.setSingleStep(0.01)
-        
-        advanced_layout.addRow("Randomization factor:", self.randomize_factor_input)
-        
-        advanced_group.setLayout(advanced_layout)
-        layout.addWidget(advanced_group)
         
         # Save button
         self.save_settings_btn = QPushButton("Save Settings")
@@ -168,21 +159,22 @@ class SettingsTab(QWidget):
         # Hotkey settings
         start_record = settings.value("start_record_hotkey", "f9")
         stop_record = settings.value("stop_record_hotkey", "f10")
+        capture_position = settings.value("capture_position_hotkey", "f11")
         stop_playback = settings.value("stop_playback_hotkey", "esc")
         
         start_index = self.start_record_hotkey.findData(start_record)
         stop_index = self.stop_record_hotkey.findData(stop_record)
+        capture_index = self.capture_position_hotkey.findData(capture_position)
         playback_index = self.stop_playback_hotkey.findData(stop_playback)
         
         if start_index >= 0:
             self.start_record_hotkey.setCurrentIndex(start_index)
         if stop_index >= 0:
             self.stop_record_hotkey.setCurrentIndex(stop_index)
+        if capture_index >= 0:
+            self.capture_position_hotkey.setCurrentIndex(capture_index)
         if playback_index >= 0:
             self.stop_playback_hotkey.setCurrentIndex(playback_index)
-        
-        # Advanced settings
-        self.randomize_factor_input.setValue(settings.value("randomize_factor", 0.1, type=float))
     
     def save_settings(self):
         # Check permission for advanced settings
@@ -204,10 +196,8 @@ class SettingsTab(QWidget):
         # Hotkey settings
         settings.setValue("start_record_hotkey", self.start_record_hotkey.currentData())
         settings.setValue("stop_record_hotkey", self.stop_record_hotkey.currentData())
+        settings.setValue("capture_position_hotkey", self.capture_position_hotkey.currentData())
         settings.setValue("stop_playback_hotkey", self.stop_playback_hotkey.currentData())
-        
-        # Advanced settings
-        settings.setValue("randomize_factor", self.randomize_factor_input.value())
         
         # Apply startup settings
         if self.start_with_windows_cb.isChecked():
@@ -247,12 +237,10 @@ class SettingsTab(QWidget):
             'movement_interval': self.movement_interval_input.value()
         }
     
-    def get_randomize_factor(self):
-        return self.randomize_factor_input.value()
-    
     def get_hotkeys(self):
         return {
             'start_record': self.start_record_hotkey.currentData(),
             'stop_record': self.stop_record_hotkey.currentData(),
+            'capture_position': self.capture_position_hotkey.currentData(),
             'stop_playback': self.stop_playback_hotkey.currentData()
         }

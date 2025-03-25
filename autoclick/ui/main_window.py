@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QMainWindow, QTabWidget, QSystemTrayIcon,
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import Qt, QSettings
 
-from autoclick.config import USER_ROLES, APP_NAME, APP_ICON
+from autoclick.config import USER_ROLES, APP_NAME, APP_ICON, APP_VERSION
 from autoclick.ui.login_dialog import LoginDialog
 from autoclick.ui.user_management import UserManagementDialog
 from autoclick.ui.recorder_tab import RecorderTab
@@ -45,7 +45,7 @@ class MainWindow(QMainWindow):
         self.show()
     
     def initUI(self):
-        self.setWindowTitle(f'{APP_NAME} - {self.username} ({USER_ROLES.get(self.role, self.role)})')
+        self.setWindowTitle(f'{APP_NAME} v{APP_VERSION} - {self.username} ({USER_ROLES.get(self.role, self.role)})')
         self.setGeometry(100, 100, 1000, 700)
         
         # Create main tab widget
@@ -136,6 +136,7 @@ class MainWindow(QMainWindow):
         self.start_record_hotkey = settings.value("start_record_hotkey", "f9")
         self.stop_record_hotkey = settings.value("stop_record_hotkey", "f10")
         self.stop_playback_hotkey = settings.value("stop_playback_hotkey", "esc")
+        self.capture_position_hotkey = settings.value("capture_position_hotkey", "f11")
     
     def on_key_press(self, event):
         # Check for recording hotkeys
@@ -149,6 +150,13 @@ class MainWindow(QMainWindow):
             # Stop recording if active
             if self.recorder_tab.recording_thread and self.recorder_tab.recording_thread.running:
                 self.recorder_tab.toggle_recording()
+        
+        # Check for capture position hotkey in hotkey mode
+        elif event.name == self.capture_position_hotkey and 'record_macros' in self.permissions:
+            if (self.recorder_tab.recording_thread and 
+                self.recorder_tab.recording_thread.running and 
+                not self.recorder_tab.continuous_mode):
+                self.recorder_tab.capture_position()
         
         # Check for stop playback hotkey
         elif event.name == self.stop_playback_hotkey:
@@ -175,9 +183,7 @@ class MainWindow(QMainWindow):
             self.playback_thread = PlaybackThread(
                 profile['script_content'],
                 profile['settings'].get('speed', 1.0),
-                profile['settings'].get('repeat', 1),
-                profile['settings'].get('randomize', False),
-                self.settings_tab.get_randomize_factor()
+                profile['settings'].get('repeat', 1)
             )
             self.playback_thread.start()
     

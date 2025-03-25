@@ -4,7 +4,8 @@ Recorder tab for the Auto Click application.
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
                             QLabel, QGroupBox, QFormLayout, QLineEdit, QTextEdit,
                             QDoubleSpinBox, QSpinBox, QCheckBox, QListWidget,
-                            QMessageBox, QListWidgetItem)
+                            QMessageBox, QListWidgetItem, QTableWidget, QTableWidgetItem,
+                            QHeaderView, QComboBox, QDialog, QDialogButtonBox)
 from PyQt5.QtCore import Qt, QTimer
 
 import pyautogui
@@ -30,6 +31,8 @@ class RecorderTab(QWidget):
         self.current_script_id = None
         self.current_script_name = ""
         self.current_script_description = ""
+        
+        self.continuous_mode = True  # Default to continuous recording
         
         self.initUI()
     
@@ -78,17 +81,38 @@ class RecorderTab(QWidget):
         script_info_layout.addRow("Description:", self.script_desc_input)
         controls_layout.addLayout(script_info_layout)
         
+        # Recording mode selection
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("Recording Mode:")
+        self.continuous_mode_radio = QCheckBox("Continuous")
+        self.continuous_mode_radio.setChecked(True)
+        self.hotkey_mode_radio = QCheckBox("Hotkey-based")
+        
+        # Connect mode radio buttons
+        self.continuous_mode_radio.clicked.connect(self.toggle_recording_mode)
+        self.hotkey_mode_radio.clicked.connect(self.toggle_recording_mode)
+        
+        mode_layout.addWidget(mode_label)
+        mode_layout.addWidget(self.continuous_mode_radio)
+        mode_layout.addWidget(self.hotkey_mode_radio)
+        controls_layout.addLayout(mode_layout)
+        
         # Record/Stop buttons
         button_layout = QHBoxLayout()
         
         self.record_btn = QPushButton("Start Recording")
         self.record_btn.clicked.connect(self.toggle_recording)
         
+        self.capture_pos_btn = QPushButton("Capture Position")
+        self.capture_pos_btn.clicked.connect(self.capture_position)
+        self.capture_pos_btn.setEnabled(False)  # Only enabled in hotkey mode
+        
         self.play_btn = QPushButton("Play")
         self.play_btn.clicked.connect(self.play_recording)
         self.play_btn.setEnabled(False)
         
         button_layout.addWidget(self.record_btn)
+        button_layout.addWidget(self.capture_pos_btn)
         button_layout.addWidget(self.play_btn)
         
         controls_layout.addLayout(button_layout)
@@ -105,18 +129,8 @@ class RecorderTab(QWidget):
         self.repeat_input.setRange(1, 9999)
         self.repeat_input.setValue(1)
         
-        self.randomize_cb = QCheckBox("Add randomization")
-        
-        # Add randomization radius setting
-        self.randomize_radius = QSpinBox()
-        self.randomize_radius.setRange(1, 50)
-        self.randomize_radius.setValue(3)
-        self.randomize_radius.setSuffix(" px")
-        
         playback_layout.addRow("Speed:", self.speed_input)
         playback_layout.addRow("Repeat:", self.repeat_input)
-        playback_layout.addRow("Randomize:", self.randomize_cb)
-        playback_layout.addRow("Random radius:", self.randomize_radius)
         
         controls_layout.addLayout(playback_layout)
         
@@ -140,14 +154,25 @@ class RecorderTab(QWidget):
         
         layout.addLayout(top_layout)
         
-        # Actions list
+        # Actions table
         actions_group = QGroupBox("Recorded Actions")
         actions_layout = QVBoxLayout()
         
-        self.actions_list = QListWidget()
-        self.actions_list.setSelectionMode(QListWidget.SingleSelection)
-        self.actions_list.itemDoubleClicked.connect(self.edit_action)
-        actions_layout.addWidget(self.actions_list)
+        self.actions_table = QTableWidget()
+        self.actions_table.setColumnCount(7)
+        self.actions_table.setHorizontalHeaderLabels(["Action", "Time (ms)", "X", "Y", "Details", "Random Radius (px)", "Random Time (±ms)"])
+        self.actions_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.actions_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.actions_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.actions_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.actions_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.actions_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.actions_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        self.actions_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.actions_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.actions_table.itemDoubleClicked.connect(self.edit_action)
+        
+        actions_layout.addWidget(self.actions_table)
         
         actions_group.setLayout(actions_layout)
         layout.addWidget(actions_group)
@@ -170,6 +195,18 @@ class RecorderTab(QWidget):
         self.record_btn.setEnabled(can_record)
         self.play_btn.setEnabled(can_play and len(self.current_actions) > 0)
         self.save_btn.setEnabled('edit_scripts' in self.permissions and len(self.current_actions) > 0)
+    
+    def toggle_recording_mode(self):
+        # Ensure only one mode is selected
+        sender = self.sender()
+        if sender == self.continuous_mode_radio and sender.isChecked():
+            self.hotkey_mode_radio.setChecked(False)
+            self.continuous_mode = True
+            self.capture_pos_btn.setEnabled(False)
+        elif sender == self.hotkey_mode_radio and sender.isChecked():
+            self.continuous_mode_radio.setChecked(False)
+            self.continuous_mode = False
+            self.capture_pos_btn.setEnabled(True)
     
     def update_coordinates(self):
         try:
@@ -202,14 +239,17 @@ class RecorderTab(QWidget):
             self.record_btn.setText("Start Recording")
             self.play_btn.setEnabled('play_macros' in self.permissions)
             self.save_btn.setEnabled('edit_scripts' in self.permissions)
+            
+            # Disable capture button in hotkey mode when not recording
+            self.capture_pos_btn.setEnabled(False)
         else:
             # Start recording
-            self.recording_thread = RecordingThread()
+            self.recording_thread = RecordingThread(continuous_mode=self.continuous_mode)
             self.recording_thread.action_recorded.connect(self.on_action_recorded)
             
             # Clear previous recording
             self.current_actions = []
-            self.actions_list.clear()
+            self.actions_table.setRowCount(0)
             
             # Start the thread
             self.recording_thread.start()
@@ -217,8 +257,17 @@ class RecorderTab(QWidget):
             self.play_btn.setEnabled(False)
             self.save_btn.setEnabled(False)
             
+            # Enable capture button in hotkey mode
+            if not self.continuous_mode:
+                self.capture_pos_btn.setEnabled(True)
+            
             # Setup mouse and keyboard listeners
             self.setup_listeners()
+    
+    def capture_position(self):
+        """Capture current cursor position in hotkey mode"""
+        if self.recording_thread and self.recording_thread.running and not self.continuous_mode:
+            self.recording_thread.add_position()
     
     def setup_listeners(self):
         # Mouse listener for clicks
@@ -227,7 +276,10 @@ class RecorderTab(QWidget):
                 return False
             
             if pressed:
-                self.recording_thread.add_action('click', x=x, y=y, button=button)
+                self.recording_thread.add_action('click', x=x, y=y, button=button, pressed=True)
+            else:
+                # For tracking duration
+                self.recording_thread.add_action('click', x=x, y=y, button=button, pressed=False)
             return True
         
         # Keyboard listener for key presses
@@ -238,51 +290,131 @@ class RecorderTab(QWidget):
             try:
                 # For normal characters
                 key_char = key.char
-                self.recording_thread.add_action('keypress', key=key_char)
+                self.recording_thread.add_action('keydown', key=key_char)
             except AttributeError:
                 # For special keys
                 key_name = str(key).replace('Key.', '')
-                self.recording_thread.add_action('keypress', key=key_name)
+                self.recording_thread.add_action('keydown', key=key_name)
+            return True
+        
+        def on_key_release(key):
+            if not self.recording_thread or not self.recording_thread.running:
+                return False
+            
+            try:
+                # For normal characters
+                key_char = key.char
+                self.recording_thread.add_action('keyup', key=key_char)
+            except AttributeError:
+                # For special keys
+                key_name = str(key).replace('Key.', '')
+                self.recording_thread.add_action('keyup', key=key_name)
             return True
         
         # Start listeners
         self.mouse_listener = mouse.Listener(on_click=on_mouse_click)
         self.mouse_listener.start()
         
-        self.keyboard_listener = keyboard.Listener(on_press=on_key_press)
+        self.keyboard_listener = keyboard.Listener(on_press=on_key_press, on_release=on_key_release)
         self.keyboard_listener.start()
     
     def on_action_recorded(self, action):
-        # Add action to the list widget
-        action_str = format_action(action)
-        item = QListWidgetItem(action_str)
-        item.setData(Qt.UserRole, action)
-        self.actions_list.addItem(item)
-        self.actions_list.scrollToBottom()
+        # Add action to the table
+        row = self.actions_table.rowCount()
+        self.actions_table.insertRow(row)
+        
+        # Set action type
+        action_type = action['type']
+        if action_type == 'click':
+            button = action.get('button', 'left')
+            pressed = action.get('pressed', True)
+            if pressed:
+                action_text = f"{button.capitalize()} click"
+            else:
+                action_text = f"{button.capitalize()} release"
+        elif action_type == 'move':
+            action_text = "Move"
+        elif action_type == 'keydown':
+            action_text = f"Key down"
+        elif action_type == 'keyup':
+            action_text = f"Key up"
+        else:
+            action_text = action_type.capitalize()
+        
+        self.actions_table.setItem(row, 0, QTableWidgetItem(action_text))
+        
+        # Set time
+        time_item = QTableWidgetItem(str(action['time']))
+        time_item.setData(Qt.UserRole, action['time'])
+        self.actions_table.setItem(row, 1, time_item)
+        
+        # Set X and Y coordinates if applicable
+        if 'x' in action and 'y' in action:
+            self.actions_table.setItem(row, 2, QTableWidgetItem(str(action['x'])))
+            self.actions_table.setItem(row, 3, QTableWidgetItem(str(action['y'])))
+        else:
+            self.actions_table.setItem(row, 2, QTableWidgetItem(""))
+            self.actions_table.setItem(row, 3, QTableWidgetItem(""))
+        
+        # Set details
+        details = ""
+        if action_type == 'keydown' or action_type == 'keyup':
+            details = f"Key: {action.get('key', '')}"
+            if 'duration' in action and action['duration'] > 0:
+                details += f", Duration: {action['duration']}ms"
+        elif action_type == 'click' and 'duration' in action and action['duration'] > 0:
+            details = f"Duration: {action['duration']}ms"
+        
+        self.actions_table.setItem(row, 4, QTableWidgetItem(details))
+        
+        # Set randomization values
+        random_radius_item = QTableWidgetItem(str(action.get('random_radius', 0)))
+        self.actions_table.setItem(row, 5, random_radius_item)
+        
+        random_time_item = QTableWidgetItem(str(action.get('random_time', 0)))
+        self.actions_table.setItem(row, 6, random_time_item)
+        
+        # Store the full action in the first column's user role
+        self.actions_table.item(row, 0).setData(Qt.UserRole, action)
         
         # Add to current actions
         self.current_actions.append(action)
+        
+        # Scroll to the new row
+        self.actions_table.scrollToItem(self.actions_table.item(row, 0))
     
     def edit_action(self, item):
         # Only allow editing when not recording
         if self.recording_thread and self.recording_thread.running:
             return
-            
-        # Get the action index
-        index = self.actions_list.row(item)
-        action = self.current_actions[index]
         
-        # Create a simple dialog to edit the action
-        from PyQt5.QtWidgets import QDialog, QDialogButtonBox
+        # Get the row
+        row = item.row()
         
+        # Get the action from the first column
+        action_item = self.actions_table.item(row, 0)
+        if not action_item:
+            return
+        
+        action = action_item.data(Qt.UserRole)
+        if not action:
+            return
+        
+        # Create a dialog to edit the action
         dialog = QDialog(self)
         dialog.setWindowTitle("Edit Action")
         layout = QVBoxLayout()
         
         form = QFormLayout()
         
+        # Time input
+        time_input = QSpinBox()
+        time_input.setRange(0, 999999)
+        time_input.setValue(action['time'])
+        form.addRow("Time (ms):", time_input)
+        
         # Different fields based on action type
-        if action['type'] == 'click':
+        if action['type'] == 'click' or action['type'] == 'move':
             x_input = QSpinBox()
             x_input.setRange(0, 9999)
             x_input.setValue(action['x'])
@@ -294,23 +426,41 @@ class RecorderTab(QWidget):
             form.addRow("X coordinate:", x_input)
             form.addRow("Y coordinate:", y_input)
             
-        elif action['type'] == 'move':
-            x_input = QSpinBox()
-            x_input.setRange(0, 9999)
-            x_input.setValue(action['x'])
-            
-            y_input = QSpinBox()
-            y_input.setRange(0, 9999)
-            y_input.setValue(action['y'])
-            
-            form.addRow("X coordinate:", x_input)
-            form.addRow("Y coordinate:", y_input)
-            
-        elif action['type'] == 'keypress':
+            if action['type'] == 'click':
+                button_input = QComboBox()
+                button_input.addItems(['left', 'right', 'middle'])
+                button_index = button_input.findText(action.get('button', 'left'))
+                if button_index >= 0:
+                    button_input.setCurrentIndex(button_index)
+                form.addRow("Button:", button_input)
+                
+                duration_input = QSpinBox()
+                duration_input.setRange(0, 10000)
+                duration_input.setValue(action.get('duration', 0))
+                form.addRow("Duration (ms):", duration_input)
+        
+        elif action['type'] == 'keydown' or action['type'] == 'keyup':
             key_input = QLineEdit()
-            key_input.setText(action['key'])
+            key_input.setText(action.get('key', ''))
             form.addRow("Key:", key_input)
             
+            if action['type'] == 'keyup':
+                duration_input = QSpinBox()
+                duration_input.setRange(0, 10000)
+                duration_input.setValue(action.get('duration', 0))
+                form.addRow("Duration (ms):", duration_input)
+        
+        # Randomization settings
+        random_radius = QSpinBox()
+        random_radius.setRange(0, 100)
+        random_radius.setValue(action.get('random_radius', 0))
+        form.addRow("Random Radius (px):", random_radius)
+        
+        random_time = QSpinBox()
+        random_time.setRange(0, 1000)
+        random_time.setValue(action.get('random_time', 0))
+        form.addRow("Random Time (±ms):", random_time)
+        
         layout.addLayout(form)
         
         # Add buttons
@@ -323,18 +473,82 @@ class RecorderTab(QWidget):
         
         # If dialog is accepted, update the action
         if dialog.exec_() == QDialog.Accepted:
+            # Update action time
+            action['time'] = time_input.value()
+            
+            # Update action-specific fields
             if action['type'] == 'click' or action['type'] == 'move':
                 action['x'] = x_input.value()
                 action['y'] = y_input.value()
-            elif action['type'] == 'keypress':
+                
+                if action['type'] == 'click':
+                    action['button'] = button_input.currentText()
+                    action['duration'] = duration_input.value()
+            
+            elif action['type'] == 'keydown' or action['type'] == 'keyup':
                 action['key'] = key_input.text()
                 
-            # Update the list item
-            item.setText(format_action(action))
-            item.setData(Qt.UserRole, action)
+                if action['type'] == 'keyup':
+                    action['duration'] = duration_input.value()
+            
+            # Update randomization settings
+            action['random_radius'] = random_radius.value()
+            action['random_time'] = random_time.value()
+            
+            # Update the table
+            self.update_action_in```python
+            # Update the table
+            self.update_action_in_table(row, action)
             
             # Update the action in the list
-            self.current_actions[index] = action
+            self.current_actions[row] = action
+    
+    def update_action_in_table(self, row, action):
+        """Update the table row with the action data"""
+        # Set action type
+        action_type = action['type']
+        if action_type == 'click':
+            button = action.get('button', 'left')
+            pressed = action.get('pressed', True)
+            if pressed:
+                action_text = f"{button.capitalize()} click"
+            else:
+                action_text = f"{button.capitalize()} release"
+        elif action_type == 'move':
+            action_text = "Move"
+        elif action_type == 'keydown':
+            action_text = f"Key down"
+        elif action_type == 'keyup':
+            action_text = f"Key up"
+        else:
+            action_text = action_type.capitalize()
+        
+        self.actions_table.item(row, 0).setText(action_text)
+        self.actions_table.item(row, 0).setData(Qt.UserRole, action)
+        
+        # Set time
+        self.actions_table.item(row, 1).setText(str(action['time']))
+        self.actions_table.item(row, 1).setData(Qt.UserRole, action['time'])
+        
+        # Set X and Y coordinates if applicable
+        if 'x' in action and 'y' in action:
+            self.actions_table.item(row, 2).setText(str(action['x']))
+            self.actions_table.item(row, 3).setText(str(action['y']))
+        
+        # Set details
+        details = ""
+        if action_type == 'keydown' or action_type == 'keyup':
+            details = f"Key: {action.get('key', '')}"
+            if 'duration' in action and action['duration'] > 0:
+                details += f", Duration: {action['duration']}ms"
+        elif action_type == 'click' and 'duration' in action and action['duration'] > 0:
+            details = f"Duration: {action['duration']}ms"
+        
+        self.actions_table.item(row, 4).setText(details)
+        
+        # Set randomization values
+        self.actions_table.item(row, 5).setText(str(action.get('random_radius', 0)))
+        self.actions_table.item(row, 6).setText(str(action.get('random_time', 0)))
     
     def play_recording(self):
         # Check permission
@@ -356,9 +570,7 @@ class RecorderTab(QWidget):
         self.playback_thread = PlaybackThread(
             self.current_actions,
             self.speed_input.value(),
-            self.repeat_input.value(),
-            self.randomize_cb.isChecked(),
-            self.randomize_radius.value() / 10.0  # Convert to randomize factor
+            self.repeat_input.value()
         )
         self.playback_thread.playback_finished.connect(self.on_playback_finished)
         self.playback_thread.action_played.connect(self.on_action_played)
@@ -377,16 +589,18 @@ class RecorderTab(QWidget):
         self.play_btn.clicked.disconnect()
         self.play_btn.clicked.connect(self.play_recording)
         
-        # Clear selection in actions list
-        self.actions_list.clearSelection()
+        # Clear selection in actions table
+        self.actions_table.clearSelection()
     
     def on_action_played(self, index):
-        # Highlight the current action in the list
-        self.actions_list.setCurrentRow(index)
+        # Highlight the current action in the table
+        if index < self.actions_table.rowCount():
+            self.actions_table.selectRow(index)
+            self.actions_table.scrollToItem(self.actions_table.item(index, 0))
     
     def clear_recording(self):
         self.current_actions = []
-        self.actions_list.clear()
+        self.actions_table.setRowCount(0)
         self.current_script_id = None
         self.current_script_name = ""
         self.current_script_description = ""
@@ -448,13 +662,10 @@ class RecorderTab(QWidget):
         self.script_name_input.setText(self.current_script_name)
         self.script_desc_input.setText(self.current_script_description)
         
-        # Update actions list
-        self.actions_list.clear()
+        # Update actions table
+        self.actions_table.setRowCount(0)
         for action in self.current_actions:
-            action_str = format_action(action)
-            item = QListWidgetItem(action_str)
-            item.setData(Qt.UserRole, action)
-            self.actions_list.addItem(item)
+            self.on_action_recorded(action)
         
         # Enable play button
         self.play_btn.setEnabled('play_macros' in self.permissions)
