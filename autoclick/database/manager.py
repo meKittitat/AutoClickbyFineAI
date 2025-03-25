@@ -26,6 +26,7 @@ class DatabaseManager:
                 username TEXT UNIQUE,
                 password_hash TEXT,
                 role TEXT DEFAULT 'standard',
+                password_reset INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 created_by TEXT
             )
@@ -128,14 +129,54 @@ class DatabaseManager:
             password_hash = hashlib.sha256(password.encode()).hexdigest()
             
             cursor.execute(
-                "SELECT id, role FROM users WHERE username = ? AND password_hash = ?",
+                "SELECT id, role, password_reset FROM users WHERE username = ? AND password_hash = ?",
                 (username, password_hash)
             )
             result = cursor.fetchone()
-            return result if result else (None, None)
+            
+            if result:
+                user_id, role, password_reset = result
+                
+                # Check if password reset is required
+                if password_reset == 1:
+                    return user_id, "reset_required"
+                else:
+                    return user_id, role
+            
+            return None, None
         except Exception as e:
             print(f"Authentication error: {e}")
             return None, None
+    
+    def reset_user_password(self, user_id):
+        """Mark a user's password as needing reset"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute(
+                "UPDATE users SET password_reset = 1 WHERE id = ?",
+                (user_id,)
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error resetting password: {e}")
+            return False
+    
+    def update_user_password(self, user_id, new_password):
+        """Update a user's password and clear the reset flag"""
+        try:
+            cursor = self.conn.cursor()
+            password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+            
+            cursor.execute(
+                "UPDATE users SET password_hash = ?, password_reset = 0 WHERE id = ?",
+                (password_hash, user_id)
+            )
+            self.conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error updating password: {e}")
+            return False
     
     def get_user_permissions(self, user_id):
         try:

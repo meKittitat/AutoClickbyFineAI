@@ -4,6 +4,7 @@ Recording functionality for the Auto Click application.
 import time
 import pyautogui
 from PyQt5.QtCore import QThread, pyqtSignal
+import json
 
 class RecordingThread(QThread):
     action_recorded = pyqtSignal(dict)
@@ -54,10 +55,19 @@ class RecordingThread(QThread):
         self.running = False
     
     def add_action(self, action_type, **kwargs):
+        # Convert any non-serializable objects to strings
+        serializable_kwargs = {}
+        for key, value in kwargs.items():
+            if key == 'button':
+                # Convert pynput Button objects to string
+                serializable_kwargs[key] = str(value).split('.')[-1].lower()
+            else:
+                serializable_kwargs[key] = value
+                
         action = {
             'type': action_type,
             'time': time.time() - self.start_time,
-            **kwargs
+            **serializable_kwargs
         }
         self.actions.append(action)
         self.action_recorded.emit(action)

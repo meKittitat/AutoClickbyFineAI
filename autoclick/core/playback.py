@@ -56,9 +56,12 @@ class PlaybackThread(QThread):
         try:
             if action['type'] == 'click':
                 if self.randomize:
+                    # Calculate pixel radius for randomization (randomize_factor * 30 gives us the pixel radius)
+                    pixel_radius = int(self.randomize_factor * 30)
+                    
                     # Add slight randomization to click position
-                    rand_x = action['x'] + int((np.random.random() * 2 - 1) * 3)
-                    rand_y = action['y'] + int((np.random.random() * 2 - 1) * 3)
+                    rand_x = action['x'] + int((np.random.random() * 2 - 1) * pixel_radius)
+                    rand_y = action['y'] + int((np.random.random() * 2 - 1) * pixel_radius)
                     pyautogui.click(rand_x, rand_y, button=action.get('button', 'left'))
                 else:
                     pyautogui.click(action['x'], action['y'], button=action.get('button', 'left'))

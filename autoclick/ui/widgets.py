@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import QWidget
 from PyQt5.QtCore import Qt, QTimer, QPoint
 from PyQt5.QtGui import QPixmap, QColor, QPainter, QPen
 import pyautogui
+import numpy as np
 
 class PixelDisplayWidget(QWidget):
     def __init__(self, parent=None):
@@ -27,7 +28,7 @@ class PixelDisplayWidget(QWidget):
             
             # Capture screen area around cursor
             screenshot = pyautogui.screenshot(region=(x-7, y-7, 15, 15))
-            img = screenshot.convert('RGB')
+            img = np.array(screenshot)
             
             # Create a new pixmap
             self.pixmap = QPixmap(150, 150)
@@ -38,11 +39,11 @@ class PixelDisplayWidget(QWidget):
             for i in range(15):
                 for j in range(15):
                     try:
-                        r, g, b = img.getpixel((i, j))
+                        r, g, b = img[j, i]  # Note: numpy array is [y, x]
                         qp.fillRect(i*self.zoom_factor, j*self.zoom_factor, 
                                    self.zoom_factor, self.zoom_factor, 
                                    QColor(r, g, b))
-                    except:
+                    except IndexError:
                         pass
             
             # Draw crosshair at center
@@ -53,8 +54,8 @@ class PixelDisplayWidget(QWidget):
             qp.end()
             
             self.update()
-        except:
-            pass
+        except Exception as e:
+            print(f"Error updating pixel display: {e}")
     
     def paintEvent(self, event):
         painter = QPainter(self)
