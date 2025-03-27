@@ -10,7 +10,8 @@ USER_ROLES = {
     'admin': 'Administrator',
     'power_user': 'Power User',
     'standard': 'Standard User',
-    'limited': 'Limited User'
+    'limited': 'Limited User',
+    'free': 'Free User'
 }
 
 # Define permissions
@@ -22,6 +23,7 @@ PERMISSIONS = {
     'create_profiles': 'Create Profiles',
     'use_image_recognition': 'Use Image Recognition',
     'manage_users': 'Manage Users',
+    'manage_roles': 'Manage Roles',
     'advanced_settings': 'Access Advanced Settings'
 }
 
@@ -30,7 +32,8 @@ DEFAULT_ROLE_PERMISSIONS = {
     'admin': list(PERMISSIONS.keys()),
     'power_user': ['record_macros', 'play_macros', 'edit_scripts', 'import_export', 'create_profiles', 'use_image_recognition'],
     'standard': ['record_macros', 'play_macros', 'edit_scripts', 'create_profiles'],
-    'limited': ['play_macros']
+    'limited': ['play_macros'],
+    'free': ['play_macros']  # Free users can only play macros
 }
 
 # Default admin credentials

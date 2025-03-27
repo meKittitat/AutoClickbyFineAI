@@ -2,8 +2,9 @@
 Login dialog for the Auto Click application.
 """
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-                            QLabel, QLineEdit, QFormLayout, QCheckBox, QMessageBox)
-from PyQt5.QtCore import Qt, pyqtSignal
+                            QLabel, QLineEdit, QFormLayout, QCheckBox, QMessageBox,
+                            QTimeEdit, QGroupBox)
+from PyQt5.QtCore import Qt, pyqtSignal, QTime
 from PyQt5.QtGui import QIcon
 
 from autoclick.config import APP_VERSION
@@ -47,20 +48,21 @@ class PasswordLineEdit(QWidget):
         self.password_input.setPlaceholderText(text)
 
 class LoginDialog(QWidget):
-    login_successful = pyqtSignal(str, str, str, list)  # user_id, username, role, permissions
+    login_successful = pyqtSignal(str, str, str, list, int, bool)  # user_id, username, role, permissions, time_remaining, lifetime_pass
     
     def __init__(self, db_manager):
         super().__init__()
         self.db_manager = db_manager
         self.is_register_mode = False
         self.is_reset_mode = False
+        self.reset_user_id = None```python
         self.reset_user_id = None
         self.reset_username = None
         self.initUI()
     
     def initUI(self):
         self.setWindowTitle('Auto Click - Login')
-        self.setFixedSize(400, 350)
+        self.setFixedSize(400, 450)
         
         layout = QVBoxLayout()
         
@@ -88,6 +90,20 @@ class LoginDialog(QWidget):
         self.form_layout.addRow("Username:", self.username_input)
         self.form_layout.addRow("Password:", self.password_input)
         self.form_layout.addRow("Confirm:", self.confirm_password_input)
+        
+        # Time selection for login
+        self.time_group = QGroupBox("Session Time")
+        self.time_group.setCheckable(True)
+        self.time_group.setChecked(False)
+        
+        time_layout = QVBoxLayout()
+        self.time_edit = QTimeEdit()
+        self.time_edit.setDisplayFormat("HH:mm")
+        self.time_edit.setTime(QTime(1, 0))  # Default 1 hour
+        time_layout.addWidget(self.time_edit)
+        
+        self.time_group.setLayout(time_layout)
+        self.form_layout.addRow("", self.time_group)
         
         form_container = QWidget()
         form_container.setLayout(self.form_layout)
@@ -130,12 +146,14 @@ class LoginDialog(QWidget):
             self.register_btn.setText("Back to Login")
             self.login_btn.clicked.disconnect()
             self.login_btn.clicked.connect(self.register)
+            self.time_group.hide()  # Hide time selection in register mode
         else:
             self.confirm_password_input.hide()
             self.login_btn.setText("Login")
             self.register_btn.setText("Register")
             self.login_btn.clicked.disconnect()
             self.login_btn.clicked.connect(self.login)
+            self.time_group.show()  # Show time selection in login mode
         
         # Clear status
         self.status_label.setText("")
@@ -148,14 +166,22 @@ class LoginDialog(QWidget):
             self.status_label.setText("Please enter both username and password")
             return
         
-        user_id, role = self.db_manager.authenticate_user(username, password)
+        user_id, role, time_remaining, lifetime_pass = self.db_manager.authenticate_user(username, password)
         if user_id:
             # Check if password reset is required
             if role == "reset_required":
                 self.show_password_reset(user_id, username)
             else:
                 permissions = self.db_manager.get_user_permissions(user_id)
-                self.login_successful.emit(user_id, username, role, permissions)
+                
+                # If time selection is enabled, update the user's time
+                if self.time_group.isChecked():
+                    time = self.time_edit.time()
+                    minutes = time.hour() * 60 + time.minute()
+                    self.db_manager.update_user_time(user_id, minutes)
+                    time_remaining += minutes
+                
+                self.login_successful.emit(user_id, username, role, permissions, time_remaining, lifetime_pass == 1)
                 self.close()
         else:
             self.status_label.setText("Invalid username or password")
@@ -172,6 +198,7 @@ class LoginDialog(QWidget):
         self.username_input.setReadOnly(True)
         self.password_input.clear()
         self.confirm_password_input.show()
+        self.time_group.hide()  # Hide time selection in reset mode
         
         self.login_btn.setText("Set New Password")
         self.login_btn.clicked.disconnect()
@@ -209,9 +236,9 @@ class LoginDialog(QWidget):
             # Get user role and permissions
             user_details = self.db_manager.get_user_details(self.reset_user_id)
             if user_details:
-                _, role = user_details
+                _, role, time_remaining, lifetime_pass = user_details
                 permissions = self.db_manager.get_user_permissions(self.reset_user_id)
-                self.login_successful.emit(self.reset_user_id, self.reset_username, role, permissions)
+                self.login_successful.emit(self.reset_user_id, self.reset_username, role, permissions, time_remaining, lifetime_pass == 1)
                 self.close()
         else:
             self.status_label.setText("Failed to update password")
@@ -246,5 +273,6 @@ class LoginDialog(QWidget):
             self.register_btn.setText("Register")
             self.login_btn.clicked.disconnect()
             self.login_btn.clicked.connect(self.login)
+            self.time_group.show()  # Show time selection in login mode
         else:
             self.status_label.setText("Username already exists")
